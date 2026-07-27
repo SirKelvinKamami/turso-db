@@ -1,0 +1,4 @@
+bind_address = "0.0.0.0:3000"
+data_dir = "./data"
+jwt_secret = "your-secret-key-change-in-production"
+max_databases = 100

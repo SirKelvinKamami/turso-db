@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: turso-db
+    runtime: docker
+    plan: free
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: BIND_ADDRESS
+        value: "0.0.0.0:10000"
+      - key: DATA_DIR
+        value: "/data"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRY_HOURS
+        value: "24"
+      - key: ADMIN_USERNAME
+        value: "admin"
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: RUST_LOG
+        value: "turso_service=info"
+    disk:
+      mountPath: /data
+      sizeGB: 1
