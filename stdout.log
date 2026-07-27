@@ -1,0 +1,3 @@
+[2m2026-07-23T13:14:35.023312Z[0m [32m INFO[0m [2mturso_service[0m[2m:[0m Server listening on 0.0.0.0:3000
+[2m2026-07-23T13:14:39.319170Z[0m [32m INFO[0m [2mturso_service::db[0m[2m:[0m Created database: my-database at ./data/cfe1f5fd-e517-4104-8ac7-f568540074af.db
+[2m2026-07-23T13:14:39.344275Z[0m [31mERROR[0m [2mturso_service::routes[0m[2m:[0m Execute error: Database cfe1f5fd-e517-4104-8ac7-f568540074af not found
