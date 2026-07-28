@@ -10,13 +10,13 @@ services:
       - key: DATA_DIR
         value: "/data"
       - key: JWT_SECRET
-        generateValue: true
+        value: "KJCahIT4SIkilqH6MRSZ1jlQp2cVphBOaiaEGjk1JUA="
       - key: JWT_EXPIRY_HOURS
         value: "24"
       - key: ADMIN_USERNAME
         value: "admin"
       - key: ADMIN_PASSWORD
-        generateValue: true
+        value: "TJACuFbcLnBHN31Y"
       - key: RUST_LOG
         value: "turso_service=info"
     disk:
