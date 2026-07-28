@@ -1,12 +1,6 @@
 FROM rust:1.97 as builder
 WORKDIR /app
 COPY . .
-
-# Move flat files into correct directory structure
-RUN mkdir -p src static && \
-    mv auth.rs config.rs db.rs main.rs models.rs routes.rs src/ && \
-    mv index.html static/
-
 RUN cargo build --release
 
 FROM debian:bookworm-slim
