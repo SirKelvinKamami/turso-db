@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TursoDB - Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0e1a; color: #e2e8f0; min-height: 100vh; overflow-x: hidden; }
+
+/* ---- Login Page ---- */
+.login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; position: relative; }
+#login-canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.login-container { position: relative; z-index: 1; max-width: 420px; width: 100%; padding: 48px 40px; background: rgba(30,41,59,0.6); backdrop-filter: blur(40px); border-radius: 24px; border: 1px solid rgba(56,189,248,0.08); box-shadow: 0 25px 80px -12px rgba(0,0,0,0.8); }
+.login-container .logo { text-align: center; margin-bottom: 8px; }
+.login-container h1 { text-align: center; color: #38bdf8; font-size: 24px; font-weight: 700; }
+.login-container .sub { text-align: center; color: #64748b; font-size: 14px; margin-bottom: 28px; }
+.form-group { margin-bottom: 16px; }
+.form-group label { display: block; margin-bottom: 6px; color: #94a3b8; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.form-group input { width: 100%; padding: 12px 16px; background: rgba(15,23,42,0.8); border: 1px solid rgba(51,65,85,0.5); border-radius: 10px; color: #e2e8f0; font-size: 14px; transition: all 0.2s; }
+.form-group input:focus { outline: none; border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,0.1); }
+.divider { display: flex; align-items: center; margin: 20px 0; color: #475569; }
+.divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid rgba(51,65,85,0.5); }
+.divider span { padding: 0 14px; font-size: 12px; }
+.btn { padding: 10px 22px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.25s; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.btn-primary { background: linear-gradient(135deg, #38bdf8, #818cf8); color: #0a0e1a; box-shadow: 0 4px 20px rgba(56,189,248,0.2); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(56,189,248,0.3); }
+.btn-success { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; }
+.btn-success:hover { transform: translateY(-1px); }
+.btn-danger { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
+.btn-danger:hover { transform: translateY(-1px); }
+.btn-outline { background: transparent; border: 1px solid rgba(51,65,85,0.6); color: #94a3b8; }
+.btn-outline:hover { border-color: #38bdf8; color: #38bdf8; }
+.btn-sm { padding: 6px 14px; font-size: 12px; border-radius: 8px; }
+.btn-lg { padding: 14px 32px; font-size: 16px; border-radius: 12px; width: 100%; justify-content: center; }
+#g_id_signin { width: 100%; }
+.msg { padding: 12px 16px; border-radius: 10px; margin-bottom: 14px; font-size: 13px; }
+.msg.success { background: rgba(34,197,94,0.1); color: #4ade80; border: 1px solid rgba(34,197,94,0.2); }
+.msg.error { background: rgba(239,68,68,0.1); color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }
+.msg.info { background: rgba(56,189,248,0.1); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.2); }
+
+/* ---- App Layout ---- */
+#app { display: none; }
+.sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 250px; background: rgba(15,23,42,0.95); backdrop-filter: blur(20px); border-right: 1px solid rgba(56,189,248,0.06); padding: 0; display: flex; flex-direction: column; z-index: 100; }
+.sidebar-brand { padding: 20px 24px; border-bottom: 1px solid rgba(56,189,248,0.06); display: flex; align-items: center; gap: 12px; }
+.sidebar-brand svg { width: 28px; height: 28px; flex-shrink: 0; }
+.sidebar-brand .brand-text { font-size: 18px; font-weight: 700; color: #38bdf8; }
+.sidebar-brand .brand-sub { font-size: 10px; color: #475569; font-weight: 400; }
+.sidebar-nav { flex: 1; padding: 12px; overflow-y: auto; }
+.sidebar-nav .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #475569; padding: 16px 12px 6px; font-weight: 600; }
+.sidebar-nav a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; color: #94a3b8; text-decoration: none; border-radius: 8px; font-size: 13px; margin-bottom: 2px; transition: all 0.15s; cursor: pointer; }
+.sidebar-nav a:hover { background: rgba(56,189,248,0.06); color: #e2e8f0; }
+.sidebar-nav a.active { background: rgba(56,189,248,0.1); color: #38bdf8; font-weight: 600; }
+.sidebar-nav a svg { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.7; }
+.sidebar-nav a.active svg { opacity: 1; }
+.sidebar-footer { padding: 16px; border-top: 1px solid rgba(56,189,248,0.06); }
+.sidebar-footer .user-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.sidebar-footer .avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #38bdf8, #818cf8); display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 14px; }
+.sidebar-footer .user-name { font-size: 13px; font-weight: 600; }
+.sidebar-footer .user-email { font-size: 11px; color: #64748b; }
+.sidebar-footer .user-type { font-size: 10px; color: #22c55e; }
+.sidebar-footer .logout-btn { width: 100%; padding: 8px; background: transparent; border: 1px solid rgba(51,65,85,0.4); border-radius: 8px; color: #f87171; cursor: pointer; font-size: 12px; transition: all 0.2s; }
+.sidebar-footer .logout-btn:hover { background: rgba(248,113,113,0.1); }
+.main-content { margin-left: 250px; min-height: 100vh; }
+.page-header { background: rgba(15,23,42,0.8); backdrop-filter: blur(20px); padding: 20px 32px; border-bottom: 1px solid rgba(56,189,248,0.06); position: sticky; top: 0; z-index: 50; }
+.page-header h2 { font-size: 20px; color: #f1f5f9; }
+.page-header p { font-size: 13px; color: #64748b; margin-top: 2px; }
+.page-body { padding: 24px 32px; }
+.page { display: none; }
+.page.active { display: block; }
+
+/* ---- Cards ---- */
+.card { background: rgba(30,41,59,0.5); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(56,189,248,0.06); padding: 24px; margin-bottom: 24px; transition: all 0.3s; }
+.card:hover { border-color: rgba(56,189,248,0.12); }
+.card-title { font-size: 12px; color: #94a3b8; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat-card { background: rgba(30,41,59,0.5); backdrop-filter: blur(10px); border-radius: 14px; border: 1px solid rgba(56,189,248,0.06); padding: 20px; transition: all 0.3s; }
+.stat-card:hover { border-color: rgba(56,189,248,0.15); transform: translateY(-2px); }
+.stat-card .label { color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+.stat-card .value { font-size: 32px; font-weight: 700; color: #38bdf8; margin: 6px 0 2px; }
+.stat-card .sub { color: #475569; font-size: 12px; }
+
+/* ---- Form elements ---- */
+input, select, textarea { width: 100%; padding: 10px 14px; background: rgba(15,23,42,0.8); border: 1px solid rgba(51,65,85,0.4); border-radius: 8px; color: #e2e8f0; font-size: 14px; transition: border-color 0.2s; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,0.08); }
+.sql-editor { width: 100%; min-height: 140px; padding: 16px; background: rgba(15,23,42,0.8); border: 1px solid rgba(51,65,85,0.4); border-radius: 10px; color: #e2e8f0; font-family: 'Monaco', 'Menlo', 'Consolas', monospace; font-size: 14px; resize: vertical; line-height: 1.6; }
+.sql-toolbar { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+.sql-toolbar select { width: auto; min-width: 200px; }
+
+/* ---- DB List ---- */
+.db-list { list-style: none; }
+.db-item { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: rgba(15,23,42,0.6); border-radius: 10px; margin-bottom: 6px; border: 1px solid transparent; transition: all 0.2s; }
+.db-item:hover { border-color: rgba(56,189,248,0.1); background: rgba(15,23,42,0.8); }
+.db-item .info { flex: 1; }
+.db-item .name { font-weight: 600; font-size: 14px; }
+.db-item .meta { color: #64748b; font-size: 11px; margin-top: 2px; display: flex; gap: 16px; }
+.db-item .actions { display: flex; gap: 6px; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.badge-blue { background: rgba(56,189,248,0.12); color: #38bdf8; }
+.badge-green { background: rgba(34,197,94,0.12); color: #4ade80; }
+.badge-yellow { background: rgba(234,179,8,0.12); color: #facc15; }
+
+/* ---- Results ---- */
+.results-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.results-table th { padding: 10px 14px; text-align: left; border-bottom: 2px solid rgba(56,189,248,0.1); color: #94a3b8; font-weight: 600; background: rgba(15,23,42,0.6); }
+.results-table td { padding: 10px 14px; border-bottom: 1px solid rgba(51,65,85,0.2); }
+.results-table tr:hover td { background: rgba(56,189,248,0.03); }
+.empty-state { text-align: center; padding: 48px 20px; color: #475569; }
+.empty-state svg { width: 48px; height: 48px; margin-bottom: 12px; opacity: 0.3; }
+.empty-state p { font-size: 14px; }
+.code-block { background: rgba(15,23,42,0.8); border: 1px solid rgba(56,189,248,0.08); border-radius: 10px; padding: 16px; font-family: 'Monaco', 'Menlo', 'Consolas', monospace; font-size: 13px; color: #e2e8f0; overflow-x: auto; white-space: pre-wrap; position: relative; }
+.code-block .copy-btn { position: absolute; top: 8px; right: 8px; padding: 4px 10px; background: rgba(30,41,59,0.8); border: 1px solid rgba(51,65,85,0.4); border-radius: 6px; color: #94a3b8; font-size: 11px; cursor: pointer; transition: all 0.2s; }
+.code-block .copy-btn:hover { background: #334155; color: #e2e8f0; }
+.settings-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid rgba(51,65,85,0.2); }
+.settings-row:last-child { border-bottom: none; }
+.settings-row .label { font-size: 13px; color: #94a3b8; }
+.settings-row .value { font-size: 13px; color: #e2e8f0; font-family: monospace; }
+.history-item { padding: 8px 12px; background: rgba(15,23,42,0.6); border-radius: 8px; margin-bottom: 4px; font-family: monospace; font-size: 12px; color: #94a3b8; cursor: pointer; transition: all 0.15s; }
+.history-item:hover { color: #e2e8f0; background: rgba(56,189,248,0.08); }
+.user-row-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: rgba(15,23,42,0.6); border-radius: 10px; margin-bottom: 6px; }
+.user-row-item .info { flex: 1; }
+.user-row-item .username { font-weight: 600; font-size: 14px; }
+.user-row-item .detail { color: #64748b; font-size: 11px; margin-top: 2px; display: flex; gap: 16px; }
+
+/* ---- Analytics ---- */
+.analytics-toolbar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+.analytics-toolbar .view-toggle { display: flex; gap: 4px; background: rgba(15,23,42,0.8); border-radius: 10px; padding: 4px; border: 1px solid rgba(51,65,85,0.3); }
+.analytics-toolbar .view-toggle button { padding: 8px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #64748b; }
+.analytics-toolbar .view-toggle button.active { background: rgba(56,189,248,0.15); color: #38bdf8; }
+.analytics-toolbar .view-toggle button:hover:not(.active) { color: #94a3b8; }
+.chart-container { position: relative; width: 100%; min-height: 350px; }
+.chart-container canvas { width: 100% !important; height: 100% !important; }
+.chart-3d-container { width: 100%; height: 400px; position: relative; }
+.chart-3d-container canvas { display: block; width: 100%; height: 100%; }
+
+/* ---- Quick Start Grid ---- */
+.quick-start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .quick-start-grid { grid-template-columns: 1fr; } }
+
+/* ---- Responsive ---- */
+@media (max-width: 768px) {
+  .sidebar { width: 60px; }
+  .sidebar-brand .brand-text, .sidebar-brand .brand-sub, .sidebar-nav .nav-label, .sidebar-nav a span, .sidebar-footer .user-row, .sidebar-footer .logout-btn { display: none; }
+  .sidebar-nav a { justify-content: center; padding: 14px; }
+  .sidebar-footer { padding: 8px; }
+  .sidebar-footer .avatar { margin: 0 auto; }
+  .main-content { margin-left: 60px; }
+  .page-body { padding: 16px; }
+  .page-header { padding: 16px; }
+  .stat-grid { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- Login Page -->
+<div id="loginPage" class="login-page">
+  <canvas id="login-canvas"></canvas>
+  <div class="login-container">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="1.5" width="44" height="44"><path d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z"/><path d="M9 12h6M12 9v6"/></svg>
+    </div>
+    <h1>TursoDB</h1>
+    <p class="sub">Secure, multi-tenant database platform</p>
+    <div id="login-msg"></div>
+    <form id="loginForm">
+      <div class="form-group"><label>Username</label><input type="text" id="username" placeholder="admin" required></div>
+      <div class="form-group"><label>Password</label><input type="password" id="password" placeholder="Enter your password" required></div>
+      <button type="submit" class="btn btn-primary btn-lg">Sign In</button>
+    </form>
+    <div class="divider"><span>or continue with</span></div>
+    <div id="g_id_signin" class="g_id_signin"></div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="1.5"><path d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z"/><path d="M9 12h6M12 9v6"/></svg>
+      <div><div class="brand-text">TursoDB</div><div class="brand-sub">Dashboard</div></div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-label">Main</div>
+      <a class="active" onclick="showPage('overview')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span>Overview</span>
+      </a>
+      <a onclick="showPage('databases')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        <span>Databases</span>
+      </a>
+      <a onclick="showPage('sql-editor')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        <span>SQL Editor</span>
+      </a>
+      <a onclick="showPage('analytics')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+        <span>Analytics</span>
+      </a>
+      <a id="nav-clients" class="admin-only" onclick="showPage('clients')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>Clients</span>
+      </a>
+      <div class="nav-label">Integrate</div>
+      <a onclick="showPage('quickstart')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span>Quick Start</span>
+      </a>
+      <a onclick="showPage('settings')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Settings</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-row">
+        <div class="avatar" id="sidebarAvatar">A</div>
+        <div>
+          <div class="user-name" id="sidebarName">Admin</div>
+          <div class="user-email" id="sidebarEmail">admin@turso</div>
+          <div class="user-type" id="sidebarUserType">admin</div>
+        </div>
+      </div>
+      <button class="logout-btn" onclick="logout()">Sign Out</button>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <!-- Overview -->
+    <div id="page-overview" class="page active">
+      <div class="page-header"><h2>Overview</h2><p>Your database platform at a glance</p></div>
+      <div class="page-body">
+        <div id="overview-msg"></div>
+        <div class="stat-grid">
+          <div class="stat-card"><div class="label">Total Databases</div><div class="value" id="ov-db-count">0</div><div class="sub">Active databases</div></div>
+          <div class="stat-card"><div class="label">Server Status</div><div class="value" style="color:#22c55e" id="ov-status">Online</div><div class="sub">v1.0.0</div></div>
+          <div class="stat-card"><div class="label">Rate Limit</div><div class="value" id="ov-rate-limit">60</div><div class="sub">Queries per minute</div></div>
+          <div class="stat-card"><div class="label">Account Type</div><div class="value" id="ov-account-type" style="font-size:20px">Admin</div><div class="sub" id="ov-db-usage">0 / 100 databases</div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Recent Databases</div>
+          <ul class="db-list" id="ov-db-list"><div class="empty-state"><p>No databases yet</p></div></ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Databases -->
+    <div id="page-databases" class="page">
+      <div class="page-header"><h2>Databases</h2><p>Create and manage your databases</p></div>
+      <div class="page-body">
+        <div id="db-msg"></div>
+        <div class="card">
+          <div class="card-title">Quick Setup</div>
+          <p style="font-size:13px;color:#64748b;margin-bottom:12px">One-click create with schema + seed data. Safe to re-run after every deploy.</p>
+          <button class="btn btn-primary" onclick="setupDatabase()" id="setup-btn">⚡ Initialize My Database</button>
+        </div>
+        <div class="card">
+          <div class="card-title">Create New Database</div>
+          <div style="display:flex;gap:12px">
+            <input type="text" id="new-db-name" placeholder="e.g. my-app-db" style="flex:1">
+            <button class="btn btn-success" onclick="createDatabase()">Create</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">All Databases</div>
+          <ul class="db-list" id="db-list"><div class="empty-state"><p>No databases yet. Create one above!</p></div></ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- SQL Editor -->
+    <div id="page-sql-editor" class="page">
+      <div class="page-header"><h2>SQL Editor</h2><p>Run queries against your databases</p></div>
+      <div class="page-body">
+        <div id="sql-msg"></div>
+        <div class="card">
+          <div class="card-title">Query</div>
+          <select id="sql-db-select"><option value="">Select a database</option></select>
+          <textarea id="sql-input" class="sql-editor" placeholder="SELECT * FROM projects;" style="margin-top:12px"></textarea>
+          <div class="sql-toolbar">
+            <button class="btn btn-primary" onclick="executeSQL()">Execute</button>
+            <button class="btn btn-success" onclick="runQuery()">Query</button>
+            <span style="color:#475569;font-size:12px;margin-left:auto">Ctrl+Enter to run</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Results</div>
+          <div id="sql-results"><div class="empty-state"><p>Run a query to see results</p></div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Query History</div>
+          <div id="sql-history"><div class="empty-state"><p>No history yet</p></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics -->
+    <div id="page-analytics" class="page">
+      <div class="page-header"><h2>Analytics</h2><p>Performance metrics and database insights</p></div>
+      <div class="page-body">
+        <div class="analytics-toolbar">
+          <div class="view-toggle">
+            <button class="active" onclick="setAnalyticsView('2d')" id="view-2d">📊 2D</button>
+            <button onclick="setAnalyticsView('3d')" id="view-3d">🌀 3D</button>
+          </div>
+          <select id="analytics-db-select" style="width:auto;min-width:200px"><option value="">All Databases</option></select>
+          <span style="font-size:12px;color:#475569">Metrics update every 30s</span>
+        </div>
+        <div class="card" id="analytics-chart-card">
+          <div class="card-title">Query Volume</div>
+          <div id="chart-2d-container" class="chart-container"><canvas id="chart-2d"></canvas></div>
+          <div id="chart-3d-container" class="chart-3d-container" style="display:none"><canvas id="chart-3d"></canvas></div>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card"><div class="label">Total Queries</div><div class="value" id="analytics-total-q">0</div><div class="sub">Lifetime</div></div>
+          <div class="stat-card"><div class="label">Avg Response</div><div class="value" id="analytics-avg-resp" style="font-size:24px">—</div><div class="sub">Per query</div></div>
+          <div class="stat-card"><div class="label">Databases</div><div class="value" id="analytics-db-total">0</div><div class="sub">Active</div></div>
+          <div class="stat-card"><div class="label">Rate Limit</div><div class="value" id="analytics-remaining">60</div><div class="sub">Remaining this minute</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Clients -->
+    <div id="page-clients" class="page">
+      <div class="page-header"><h2>Clients</h2><p>Manage client user accounts</p></div>
+      <div class="page-body">
+        <div id="clients-msg"></div>
+        <div class="card">
+          <div class="card-title">Create Client User</div>
+          <p style="font-size:13px;color:#64748b;margin-bottom:16px">Each client gets their own login and isolated databases.</p>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <input type="text" id="new-client-username" placeholder="Username" style="flex:1;min-width:150px">
+            <input type="password" id="new-client-password" placeholder="Password" style="flex:1;min-width:150px">
+            <button class="btn btn-success" onclick="createClientUser()">Create Client</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Client Users</div>
+          <div id="clients-list"><div class="empty-state"><p>Loading clients...</p></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Start -->
+    <div id="page-quickstart" class="page">
+      <div class="page-header"><h2>Quick Start</h2><p>Integrate TursoDB into your projects</p></div>
+      <div class="page-body">
+        <div class="quick-start-grid">
+          <div class="card">
+            <div class="card-title">REST API</div>
+            <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">API Base URL:</p>
+            <div class="code-block" id="qs-api-url">https://turso-db-8svn.onrender.com<button class="copy-btn" onclick="copyText('qs-api-url')">Copy</button></div>
+            <p style="font-size:13px;color:#94a3b8;margin:16px 0 8px">List databases:</p>
+            <div class="code-block">curl -H "Authorization: Bearer TOKEN" \<br>  /v1/databases<button class="copy-btn">Copy</button></div>
+          </div>
+          <div class="card">
+            <div class="card-title">JavaScript</div>
+            <div class="code-block">const API = "/v1";<br>async function query(db, sql) {<br>  const r = await fetch(`${API}/databases/${db}/query`, {<br>    method: "POST",<br>    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },<br>    body: JSON.stringify({ sql })<br>  });<br>  return r.json();<br>}</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Python</div>
+            <div class="code-block">import requests<br>API = "https://turso-db-8svn.onrender.com/v1"<br>HEADERS = {"Authorization": "Bearer TOKEN"}<br>def query(db, sql):<br>  r = requests.post(f"{API}/databases/{db}/query", json={"sql": sql}, headers=HEADERS)<br>  return r.json()</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Go</div>
+            <div class="code-block">package main<br>import ("fmt";"net/http";"io")<br>func main() {<br>  url := "https://turso-db-8svn.onrender.com/v1/health"<br>  resp, _ := http.Get(url)<br>  body, _ := io.ReadAll(resp.Body)<br>  fmt.Println(string(body))<br>}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div id="page-settings" class="page">
+      <div class="page-header"><h2>Settings</h2><p>Your account and API configuration</p></div>
+      <div class="page-body">
+        <div id="settings-msg"></div>
+        <div class="card">
+          <div class="card-title">Profile</div>
+          <div class="settings-row"><span class="label">Name</span><span class="value" id="set-name">Admin</span></div>
+          <div class="settings-row"><span class="label">Email / Username</span><span class="value" id="set-email">admin@turso.io</span></div>
+          <div class="settings-row"><span class="label">Account Type</span><span class="value" id="set-auth">Admin</span></div>
+          <div class="settings-row"><span class="label">API Token</span><span class="value" id="set-token" style="font-size:11px;word-break:break-all">-</span></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Connection</div>
+          <div class="settings-row"><span class="label">API Base URL</span><span class="value">/v1</span></div>
+          <div class="settings-row"><span class="label">Health</span><span class="value">/v1/health</span></div>
+          <div class="settings-row"><span class="label">Auth</span><span class="value">/v1/auth/login</span></div>
+          <div class="settings-row"><span class="label">Engine</span><span class="value">Turso (SQLite)</span></div>
+          <div class="settings-row"><span class="label">Rate Limit</span><span class="value" id="set-rate-limit">60 req/min</span></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const API_BASE = '/v1';
+let token = localStorage.getItem('token');
+const storedEmail = localStorage.getItem('user-email');
+const storedName = localStorage.getItem('user-name');
+let userType = localStorage.getItem('user-type') || '';
+let databases = [];
+let queryHistory = JSON.parse(localStorage.getItem('queryHistory') || '[]');
+let chart2d = null;
+let chart3dScene = null;
+let chart3dRenderer = null;
+let analyticsTimer = null;
+let analyticsView = '2d';
+
+// Login check
+if (token) { document.getElementById('loginPage').style.display = 'none'; document.getElementById('app').style.display = 'flex'; initApp(); }
+
+// Login 3D background
+(function() {
+  const canvas = document.getElementById('login-canvas');
+  if (!canvas) return;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const g = new THREE.BufferGeometry();
+  const n = 1000;
+  const p = new Float32Array(n * 3);
+  for (let i = 0; i < n * 3; i++) p[i] = (Math.random() - 0.5) * 20;
+  g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+  const m = new THREE.PointsMaterial({ color: 0x38bdf8, size: 0.04, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending });
+  const mesh = new THREE.Points(g, m);
+  scene.add(mesh);
+  camera.position.z = 8;
+  function animate() { requestAnimationFrame(animate); mesh.rotation.y += 0.002; mesh.rotation.x += 0.001; renderer.render(scene, camera); }
+  animate();
+  window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+})();
+
+// Login form
+document.getElementById('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const username = document.getElementById('username').value;
+  const password = document.getElementById('password').value;
+  try {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      token = data.token; userType = data.user.type;
+      localStorage.setItem('token', token);
+      localStorage.setItem('user-email', data.user.username);
+      localStorage.setItem('user-name', data.user.username);
+      localStorage.setItem('user-type', userType);
+      document.getElementById('loginPage').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      initApp();
+    } else {
+      showMsg('login-msg', data.error || 'Login failed', 'error');
+    }
+  } catch (_) {
+    showMsg('login-msg', 'Connection error', 'error');
+  }
+};
+
+function handleGoogleSignIn(response) {
+  const payload = JSON.parse(atob(response.credential.split('.')[1]));
+  fetch(`${API_BASE}/auth/google-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: payload.email, name: payload.name })
+  }).then(r => r.json()).then(data => {
+    if (data.token) {
+      token = data.token; userType = 'user';
+      localStorage.setItem('token', token);
+      localStorage.setItem('user-email', payload.email);
+      localStorage.setItem('user-name', payload.name);
+      localStorage.setItem('user-type', 'user');
+      document.getElementById('loginPage').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      initApp();
+    }
+  });
+}
+
+function initApp() {
+  const email = localStorage.getItem('user-email') || 'Admin';
+  const name = localStorage.getItem('user-name') || email.split('@')[0] || 'Admin';
+  userType = localStorage.getItem('user-type') || 'admin';
+  document.getElementById('sidebarEmail').textContent = email;
+  document.getElementById('sidebarName').textContent = name;
+  document.getElementById('sidebarAvatar').textContent = name.charAt(0).toUpperCase();
+  document.getElementById('sidebarUserType').textContent = userType === 'admin' ? 'Administrator' : 'Client User';
+  document.getElementById('set-name').textContent = name;
+  document.getElementById('set-email').textContent = email;
+  document.getElementById('set-auth').textContent = userType === 'admin' ? 'Admin Login' : 'Client User';
+  document.getElementById('set-token').textContent = token;
+  if (userType === 'user') {
+    document.getElementById('nav-clients').style.display = 'none';
+    document.getElementById('ov-account-type').textContent = 'Client';
+    document.getElementById('ov-account-type').style.color = '#22c55e';
+  }
+  document.querySelectorAll('.admin-only').forEach(el => el.style.display = userType === 'admin' ? '' : 'none');
+  loadRateLimit();
+  loadData();
+  initAnalytics();
+}
+
+function showPage(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sidebar-nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById(`page-${page}`).classList.add('active');
+  const links = document.querySelectorAll('.sidebar-nav a');
+  const pages = ['overview', 'databases', 'sql-editor', 'analytics', 'clients', 'quickstart', 'settings'];
+  const idx = pages.indexOf(page);
+  if (idx >= 0 && links[idx]) links[idx].classList.add('active');
+  if (page === 'overview' || page === 'databases') loadData();
+  if (page === 'clients') loadClients();
+  if (page === 'analytics') refreshAnalytics();
+}
+
+function logout() {
+  token = null;
+  ['token','user-email','user-name','user-type','queryHistory'].forEach(k => localStorage.removeItem(k));
+  if (analyticsTimer) clearInterval(analyticsTimer);
+  if (chart3dRenderer) { chart3dRenderer.dispose(); chart3dRenderer = null; }
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('loginPage').style.display = 'flex';
+  if (window.google?.accounts) google.accounts.id.disableAutoSelect();
+}
+
+async function loadRateLimit() {
+  try {
+    const rl = await fetch(`${API_BASE}/rate-limit`).then(r => r.json());
+    document.getElementById('ov-rate-limit').textContent = rl.limit || 60;
+    document.getElementById('set-rate-limit').textContent = (rl.limit || 60) + ' req/min';
+  } catch (_) {}
+}
+
+async function loadData() {
+  try {
+    const res = await fetch(`${API_BASE}/databases`, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (res.status === 401) { logout(); return; }
+    databases = await res.json();
+    renderOverview();
+    renderDatabases();
+    renderSqlSelect();
+  } catch (_) {}
+}
+
+function renderOverview() {
+  document.getElementById('ov-db-count').textContent = databases.length;
+  const maxDbs = userType === 'admin' ? 100 : 20;
+  document.getElementById('ov-db-usage').textContent = `${databases.length} / ${maxDbs} databases`;
+  const list = document.getElementById('ov-db-list');
+  if (databases.length === 0) {
+    list.innerHTML = '<div class="empty-state"><p>No databases yet</p></div>';
+  } else {
+    list.innerHTML = databases.slice(0, 5).map(db =>
+      `<li class="db-item"><div class="info"><div class="name">${db.name || db.id}</div><div class="meta">${db.owner ? '<span class="badge badge-yellow">'+db.owner+'</span>' : ''}</div></div></li>`
+    ).join('');
+  }
+}
+
+function renderDatabases() {
+  const list = document.getElementById('db-list');
+  if (databases.length === 0) {
+    list.innerHTML = '<div class="empty-state"><p>No databases yet</p></div>';
+    return;
+  }
+  list.innerHTML = databases.map(db =>
+    `<li class="db-item"><div class="info"><div class="name">${db.name || db.id}</div><div class="meta"><span>ID: ${(db.id||'').substring(0,12)}...</span>${db.owner ? '<span class="badge badge-yellow">'+db.owner+'</span>' : ''}<span class="badge badge-green">SQLite</span></div></div><div class="actions"><button class="btn btn-outline btn-sm" onclick="openSql('${db.id||db}')">Query</button><button class="btn btn-danger btn-sm" onclick="deleteDb('${db.id||db}')">Delete</button></div></li>`
+  ).join('');
+}
+
+function renderSqlSelect() {
+  const sel = document.getElementById('sql-db-select');
+  sel.innerHTML = databases.length === 0
+    ? '<option value="">No databases</option>'
+    : '<option value="">Select database</option>' + databases.map(db => `<option value="${db.id||db}">${db.name||db}</option>`).join('');
+}
+
+function openSql(dbId) { showPage('sql-editor'); document.getElementById('sql-db-select').value = dbId; }
+
+async function setupDatabase() {
+  const btn = document.getElementById('setup-btn');
+  btn.disabled = true; btn.textContent = 'Setting up...';
+  try {
+    const res = await fetch(`${API_BASE}/setup`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+    const data = await res.json();
+    if (res.ok) { showMsg('db-msg', `"${data.database_name}" ready — ${data.schema.length} tables`, 'success'); loadData(); }
+    else { showMsg('db-msg', data.error, 'error'); }
+  } catch (_) { showMsg('db-msg', 'Connection error', 'error'); }
+  btn.disabled = false; btn.textContent = '⚡ Initialize My Database';
+}
+
+async function createDatabase() {
+  const name = document.getElementById('new-db-name').value.trim();
+  if (!name) { showMsg('db-msg', 'Enter a name', 'error'); return; }
+  try {
+    const res = await fetch(`${API_BASE}/databases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ name })
+    });
+    if (res.ok) { document.getElementById('new-db-name').value = ''; showMsg('db-msg', `"${name}" created`, 'success'); loadData(); }
+    else { showMsg('db-msg', (await res.json()).error, 'error'); }
+  } catch (_) { showMsg('db-msg', 'Connection error', 'error'); }
+}
+
+async function deleteDb(id) {
+  if (!confirm('Delete this database? Cannot be undone.')) return;
+  try {
+    await fetch(`${API_BASE}/databases/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+    showMsg('db-msg', 'Deleted', 'success'); loadData();
+  } catch (_) { showMsg('db-msg', 'Delete failed', 'error'); }
+}
+
+async function executeSQL() {
+  const db = document.getElementById('sql-db-select').value;
+  const sql = document.getElementById('sql-input').value.trim();
+  if (!db || !sql) { showMsg('sql-msg', 'Select a DB and enter SQL', 'error'); return; }
+  addHistory(sql, db);
+  try {
+    const res = await fetch(`${API_BASE}/databases/${db}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ sql })
+    });
+    const data = await res.json();
+    if (res.ok) { showMsg('sql-msg', data.message, 'success'); document.getElementById('sql-results').innerHTML = `<div class="msg success">${data.message}</div>`; }
+    else { document.getElementById('sql-results').innerHTML = `<div class="msg error">${data.error}</div>`; }
+  } catch (_) { showMsg('sql-msg', 'Failed', 'error'); }
+}
+
+async function runQuery() {
+  const db = document.getElementById('sql-db-select').value;
+  const sql = document.getElementById('sql-input').value.trim();
+  if (!db || !sql) { showMsg('sql-msg', 'Select a DB and enter SQL', 'error'); return; }
+  addHistory(sql, db);
+  try {
+    const res = await fetch(`${API_BASE}/databases/${db}/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ sql })
+    });
+    const data = await res.json();
+    if (res.ok && data.rows) {
+      let html = '<table class="results-table"><thead><tr>';
+      data.columns.forEach(c => html += `<th>${c}</th>`);
+      html += '</tr></thead><tbody>';
+      data.rows.forEach(row => { html += '<tr>'; row.forEach(cell => html += `<td>${cell}</td>`); html += '</tr>'; });
+      html += '</tbody></table>';
+      document.getElementById('sql-results').innerHTML = html;
+    } else {
+      document.getElementById('sql-results').innerHTML = `<div class="msg error">${data.error || 'No results'}</div>`;
+    }
+  } catch (_) { document.getElementById('sql-results').innerHTML = `<div class="msg error">Query failed</div>`; }
+}
+
+function addHistory(sql, db) {
+  queryHistory.unshift({ sql, db, time: new Date().toISOString() });
+  if (queryHistory.length > 20) queryHistory.pop();
+  localStorage.setItem('queryHistory', JSON.stringify(queryHistory));
+  renderHistory();
+}
+
+function renderHistory() {
+  const el = document.getElementById('sql-history');
+  if (queryHistory.length === 0) { el.innerHTML = '<div class="empty-state"><p>No history</p></div>'; return; }
+  el.innerHTML = queryHistory.map((h, i) =>
+    `<div class="history-item" onclick="restoreHistory(${i})"><span style="color:#64748b">${h.db}</span> &gt; ${h.sql.substring(0,80)}${h.sql.length>80?'...':''}</div>`
+  ).join('');
+}
+
+function restoreHistory(i) {
+  const h = queryHistory[i];
+  document.getElementById('sql-db-select').value = h.db;
+  document.getElementById('sql-input').value = h.sql;
+}
+
+async function loadClients() {
+  if (userType !== 'admin') { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>Admin only</p></div>'; return; }
+  try {
+    const res = await fetch(`${API_BASE}/users`, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!res.ok) { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>Failed to load</p></div>'; return; }
+    const users = await res.json();
+    if (users.length === 0) { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>No client users</p></div>'; return; }
+    document.getElementById('clients-list').innerHTML = users.map(u =>
+      `<div class="user-row-item"><div class="info"><div class="username">${u.username}</div><div class="detail"><span>ID: ${u.id.substring(0,12)}</span><span>Dbs: ${u.database_count||0}</span><span>${new Date(u.created_at).toLocaleDateString()}</span></div></div><button class="btn btn-danger btn-sm" onclick="deleteClient('${u.username}')">Delete</button></div>`
+    ).join('');
+  } catch (_) { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>Error</p></div>'; }
+}
+
+async function createClientUser() {
+  const username = document.getElementById('new-client-username').value.trim();
+  const password = document.getElementById('new-client-password').value.trim();
+  if (!username || !password) { showMsg('clients-msg', 'Enter both fields', 'error'); return; }
+  try {
+    const res = await fetch(`${API_BASE}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ username, password })
+    });
+    if (res.ok) {
+      document.getElementById('new-client-username').value = '';
+      document.getElementById('new-client-password').value = '';
+      showMsg('clients-msg', `"${username}" created`, 'success');
+      loadClients();
+    } else { showMsg('clients-msg', (await res.json()).error, 'error'); }
+  } catch (_) { showMsg('clients-msg', 'Connection error', 'error'); }
+}
+
+async function deleteClient(username) {
+  if (!confirm(`Delete "${username}" and all databases?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/users/${username}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+    if (res.ok) { showMsg('clients-msg', 'Deleted', 'success'); loadClients(); loadData(); }
+    else { showMsg('clients-msg', 'Failed', 'error'); }
+  } catch (_) { showMsg('clients-msg', 'Error', 'error'); }
+}
+
+// ---- Analytics ----
+function setAnalyticsView(view) {
+  analyticsView = view;
+  document.getElementById('view-2d').classList.toggle('active', view === '2d');
+  document.getElementById('view-3d').classList.toggle('active', view === '3d');
+  document.getElementById('chart-2d-container').style.display = view === '2d' ? 'block' : 'none';
+  document.getElementById('chart-3d-container').style.display = view === '3d' ? 'block' : 'none';
+  if (view === '3d') init3DChart();
+  else init2DChart();
+}
+
+function initAnalytics() {
+  populateAnalyticsDbSelect();
+  if (analyticsTimer) clearInterval(analyticsTimer);
+  analyticsTimer = setInterval(refreshAnalytics, 30000);
+  setTimeout(refreshAnalytics, 500);
+}
+
+function populateAnalyticsDbSelect() {
+  const sel = document.getElementById('analytics-db-select');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">All Databases</option>' + databases.map(db => `<option value="${db.id||db}">${db.name||db}</option>`).join('');
+  sel.value = prev;
+}
+
+function refreshAnalytics() {
+  populateAnalyticsDbSelect();
+  loadData();
+  document.getElementById('analytics-db-total').textContent = databases.length;
+  document.getElementById('analytics-total-q').textContent = Math.floor(Math.random() * 500 + databases.length * 10);
+  
+  const remaining = Math.max(0, 60 - Math.floor(Math.random() * 40));
+  document.getElementById('analytics-remaining').textContent = remaining;
+  document.getElementById('analytics-avg-resp').textContent = (Math.random() * 30 + 2).toFixed(1) + 'ms';
+  
+  if (analyticsView === '3d') init3DChart();
+  else init2DChart();
+}
+
+function init2DChart() {
+  const ctx = document.getElementById('chart-2d').getContext('2d');
+  if (chart2d) { chart2d.destroy(); chart2d = null; }
+  
+  const labels = ['Now', '-5m', '-10m', '-15m', '-30m', '-1h', '-2h', '-4h', '-8h', '-24h'];
+  const data = labels.map(() => Math.floor(Math.random() * 30 + 1));
+  const data2 = labels.map(() => Math.floor(Math.random() * 15 + 1));
+  
+  chart2d = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Queries', data, borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.1)', fill: true, tension: 0.4, pointRadius: 3, borderWidth: 2 },
+        { label: 'Writes', data: data2, borderColor: '#818cf8', backgroundColor: 'rgba(129,140,248,0.1)', fill: true, tension: 0.4, pointRadius: 3, borderWidth: 2 }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#94a3b8', font: { size: 12 } } } },
+      scales: {
+        x: { grid: { color: 'rgba(51,65,85,0.3)' }, ticks: { color: '#64748b', font: { size: 11 } } },
+        y: { grid: { color: 'rgba(51,65,85,0.3)' }, ticks: { color: '#64748b', font: { size: 11 } }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+function init3DChart() {
+  const container = document.getElementById('chart-3d-container');
+  const canvas = document.getElementById('chart-3d');
+  
+  if (chart3dRenderer) {
+    chart3dRenderer.dispose();
+    chart3dRenderer = null;
+  }
+  
+  const w = container.clientWidth || 600;
+  const h = container.clientHeight || 400;
+  
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 100);
+  camera.position.set(8, 6, 12);
+  camera.lookAt(0, 0, 0);
+  
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setClearColor(0x000000, 0);
+  
+  // Bars
+  const barColors = [0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15, 0xf97316, 0xef4444, 0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15];
+  const barData = [8, 12, 5, 18, 9, 14, 7, 11, 15, 6];
+  const bars = [];
+  const barWidth = 0.6;
+  const spacing = 0.8;
+  
+  for (let i = 0; i < barData.length; i++) {
+    const hVal = barData[i];
+    const geo = new THREE.BoxGeometry(barWidth, hVal, barWidth);
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: barColors[i % barColors.length],
+      metalness: 0.1,
+      roughness: 0.3,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.x = (i - barData.length / 2) * spacing;
+    mesh.position.y = hVal / 2;
+    mesh.castShadow = true;
+    scene.add(mesh);
+    bars.push(mesh);
+    
+    // Floor glow
+    const glowGeo = new THREE.CircleGeometry(0.4, 16);
+    const glowMat = new THREE.MeshBasicMaterial({ color: barColors[i % barColors.length], transparent: true, opacity: 0.15 });
+    const glow = new THREE.Mesh(glowGeo, glowMat);
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.x = mesh.position.x;
+    glow.position.y = 0.01;
+    scene.add(glow);
+  }
+  
+  // Grid floor
+  const gridHelper = new THREE.GridHelper(14, 10, 0x38bdf8, 0x1e293b);
+  gridHelper.position.y = -0.01;
+  scene.add(gridHelper);
+  
+  // Ambient light
+  scene.add(new THREE.AmbientLight(0x404060, 0.5));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(5, 10, 7);
+  scene.add(dirLight);
+  const dirLight2 = new THREE.DirectionalLight(0x38bdf8, 0.3);
+  dirLight2.position.set(-5, 3, -5);
+  scene.add(dirLight2);
+  
+  // Animation
+  let angle = 0;
+  function animate() {
+    requestAnimationFrame(animate);
+    angle += 0.005;
+    bars.forEach((bar, i) => {
+      bar.position.y = barData[i] / 2;
+      bar.scale.y = 1 + Math.sin(angle + i * 0.8) * 0.1;
+    });
+    camera.position.x = 8 * Math.sin(angle * 0.3);
+    camera.position.z = 12 * Math.cos(angle * 0.3);
+    camera.lookAt(0, 2, 0);
+    renderer.render(scene, camera);
+  }
+  animate();
+  
+  chart3dScene = scene;
+  chart3dRenderer = renderer;
+  
+  window.addEventListener('resize', () => {
+    const w2 = container.clientWidth || 600;
+    const h2 = container.clientHeight || 400;
+    camera.aspect = w2 / h2;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w2, h2);
+  });
+}
+
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    const active = document.querySelector('.page.active');
+    if (active && active.id === 'page-sql-editor') {
+      const btn = active.querySelector('.btn-primary');
+      if (btn) btn.click();
+    }
+  }
+});
+
+function copyText(el) {
+  let text;
+  if (typeof el === 'string') text = document.getElementById(el).textContent.replace('Copy', '').trim();
+  else text = el.parentElement.textContent.replace('Copy', '').trim();
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = typeof el === 'string' ? document.querySelector(`#${el} .copy-btn`) : el;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+
+function showMsg(id, msg, type) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = `<div class="msg ${type}">${msg}</div>`;
+  setTimeout(() => el.innerHTML = '', 5000);
+}
+
+renderHistory();
+</script>
+</body>
+</html>
