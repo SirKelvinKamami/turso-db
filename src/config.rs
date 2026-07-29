@@ -10,6 +10,7 @@ pub struct Config {
     pub max_databases: usize,
     pub max_queries_per_minute: u64,
     pub encryption_key: Option<String>,
+    pub seed_users: Vec<(String, String)>,
 }
 
 impl Config {
@@ -35,6 +36,21 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()?,
             encryption_key: std::env::var("ENCRYPTION_KEY").ok(),
+            seed_users: {
+                let raw = std::env::var("SEED_USERS").unwrap_or_default();
+                raw.split(',')
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|pair| {
+                        let parts: Vec<&str> = pair.split(':').collect();
+                        if parts.len() == 2 {
+                            Some((parts[0].to_string(), parts[1].to_string()))
+                        } else {
+                            tracing::warn!("Invalid SEED_USERS entry: {}", pair);
+                            None
+                        }
+                    })
+                    .collect()
+            },
         })
     }
 }

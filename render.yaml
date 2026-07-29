@@ -19,6 +19,8 @@ services:
         value: "TJACuFbcLnBHN31Y"
       - key: RUST_LOG
         value: "turso_service=info"
+      - key: SEED_USERS
+        value: "das-creatives:nw2a.-QVN-85L||8"
     disk:
       mountPath: /data
       sizeGB: 1
