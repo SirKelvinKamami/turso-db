@@ -7,7 +7,7 @@ mod routes;
 mod users;
 
 use std::sync::Arc;
-use axum::{Router, response::Redirect};
+use axum::{Router, response::Redirect, routing::get};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::services::ServeDir;
