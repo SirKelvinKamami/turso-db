@@ -7,7 +7,7 @@ mod routes;
 mod users;
 
 use std::sync::Arc;
-use axum::Router;
+use axum::{Router, response::Redirect};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tower_http::services::ServeDir;
@@ -47,6 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rate_limiter = RateLimiter::new(config.max_queries_per_minute, 60);
 
     let app = Router::new()
+        .route("/dashboard", get(|| async { Redirect::permanent("/dashboard.html") }))
         .nest("/v1", routes::api_routes(db_manager.clone(), (*user_store_arc).clone(), rate_limiter))
         .fallback_service(ServeDir::new("static"))
         .layer(CorsLayer::permissive())
