@@ -135,7 +135,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8
 .chart-container { position: relative; width: 100%; min-height: 350px; }
 .chart-container canvas { width: 100% !important; height: 100% !important; }
 .chart-3d-container { width: 100%; height: 400px; position: relative; }
-.chart-3d-container canvas { display: block; width: 100%; height: 100%; }
+.chart-3d-container canvas { display: block; }
 
 /* ---- Quick Start Grid ---- */
 .quick-start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -510,6 +510,8 @@ function initApp() {
   initAnalytics();
 }
 
+let analyticsInitialized = false;
+
 function showPage(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.sidebar-nav a').forEach(a => a.classList.remove('active'));
@@ -520,7 +522,13 @@ function showPage(page) {
   if (idx >= 0 && links[idx]) links[idx].classList.add('active');
   if (page === 'overview' || page === 'databases') loadData();
   if (page === 'clients') loadClients();
-  if (page === 'analytics') refreshAnalytics();
+  if (page === 'analytics') {
+    refreshAnalytics();
+    if (!analyticsInitialized) {
+      analyticsInitialized = true;
+      setAnalyticsView(analyticsView);
+    }
+  }
 }
 
 function logout() {
@@ -758,9 +766,6 @@ function refreshAnalytics() {
   const remaining = Math.max(0, 60 - Math.floor(Math.random() * 40));
   document.getElementById('analytics-remaining').textContent = remaining;
   document.getElementById('analytics-avg-resp').textContent = (Math.random() * 30 + 2).toFixed(1) + 'ms';
-  
-  if (analyticsView === '3d') init3DChart();
-  else init2DChart();
 }
 
 function init2DChart() {
@@ -792,101 +797,94 @@ function init2DChart() {
 }
 
 function init3DChart() {
-  const container = document.getElementById('chart-3d-container');
-  const canvas = document.getElementById('chart-3d');
-  
-  if (chart3dRenderer) {
-    chart3dRenderer.dispose();
-    chart3dRenderer = null;
-  }
-  
-  const w = container.clientWidth || 600;
-  const h = container.clientHeight || 400;
-  
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 100);
-  camera.position.set(8, 6, 12);
-  camera.lookAt(0, 0, 0);
-  
-  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-  renderer.setSize(w, h);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setClearColor(0x000000, 0);
-  
-  // Bars
-  const barColors = [0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15, 0xf97316, 0xef4444, 0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15];
-  const barData = [8, 12, 5, 18, 9, 14, 7, 11, 15, 6];
-  const bars = [];
-  const barWidth = 0.6;
-  const spacing = 0.8;
-  
-  for (let i = 0; i < barData.length; i++) {
-    const hVal = barData[i];
-    const geo = new THREE.BoxGeometry(barWidth, hVal, barWidth);
-    const mat = new THREE.MeshPhysicalMaterial({
-      color: barColors[i % barColors.length],
-      metalness: 0.1,
-      roughness: 0.3,
-      transparent: true,
-      opacity: 0.85,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.x = (i - barData.length / 2) * spacing;
-    mesh.position.y = hVal / 2;
-    mesh.castShadow = true;
-    scene.add(mesh);
-    bars.push(mesh);
+  try {
+    const container = document.getElementById('chart-3d-container');
+    const oldCanvas = document.getElementById('chart-3d');
     
-    // Floor glow
-    const glowGeo = new THREE.CircleGeometry(0.4, 16);
-    const glowMat = new THREE.MeshBasicMaterial({ color: barColors[i % barColors.length], transparent: true, opacity: 0.15 });
-    const glow = new THREE.Mesh(glowGeo, glowMat);
-    glow.rotation.x = -Math.PI / 2;
-    glow.position.x = mesh.position.x;
-    glow.position.y = 0.01;
-    scene.add(glow);
-  }
-  
-  // Grid floor
-  const gridHelper = new THREE.GridHelper(14, 10, 0x38bdf8, 0x1e293b);
-  gridHelper.position.y = -0.01;
-  scene.add(gridHelper);
-  
-  // Ambient light
-  scene.add(new THREE.AmbientLight(0x404060, 0.5));
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  dirLight.position.set(5, 10, 7);
-  scene.add(dirLight);
-  const dirLight2 = new THREE.DirectionalLight(0x38bdf8, 0.3);
-  dirLight2.position.set(-5, 3, -5);
-  scene.add(dirLight2);
-  
-  // Animation
-  let angle = 0;
-  function animate() {
-    requestAnimationFrame(animate);
-    angle += 0.005;
-    bars.forEach((bar, i) => {
-      bar.position.y = barData[i] / 2;
-      bar.scale.y = 1 + Math.sin(angle + i * 0.8) * 0.1;
+    // Clean up previous renderer
+    if (chart3dRenderer) {
+      try { chart3dRenderer.forceContextLoss(); } catch(_) {}
+      try { chart3dRenderer.dispose(); } catch(_) {}
+      chart3dRenderer = null;
+    }
+    chart3dScene = null;
+    
+    // Replace canvas to get a clean WebGL context
+    const canvas = document.createElement('canvas');
+    canvas.id = 'chart-3d';
+    container.innerHTML = '';
+    container.appendChild(canvas);
+    
+    // Wait for layout then init
+    requestAnimationFrame(() => {
+      try {
+        const w = container.clientWidth || 600;
+        const h = container.clientHeight || 400;
+        
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 100);
+        camera.position.set(10, 8, 14);
+        camera.lookAt(0, 2, 0);
+        
+        const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+        renderer.setSize(w, h);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setClearColor(0x000000, 0);
+        
+        const barData = [8, 12, 5, 18, 9, 14, 7, 11, 15, 6];
+        const colors = [0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15, 0xf97316, 0xef4444, 0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15];
+        const bars = [];
+        const spacing = 0.9;
+        
+        for (let i = 0; i < barData.length; i++) {
+          const v = barData[i];
+          const geo = new THREE.BoxGeometry(0.6, v, 0.6);
+          const mat = new THREE.MeshPhongMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.85 });
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.position.x = (i - barData.length / 2) * spacing;
+          mesh.position.y = v / 2;
+          scene.add(mesh);
+          bars.push(mesh);
+          
+          // Floor glow
+          const glow = new THREE.Mesh(
+            new THREE.CircleGeometry(0.4, 16),
+            new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.12 })
+          );
+          glow.rotation.x = -Math.PI / 2;
+          glow.position.set(mesh.position.x, 0.01, 0);
+          scene.add(glow);
+        }
+        
+        scene.add(new THREE.GridHelper(14, 10, 0x38bdf8, 0x1e293b));
+        scene.add(new THREE.AmbientLight(0x404060, 0.6));
+        const dl = new THREE.DirectionalLight(0xffffff, 0.9);
+        dl.position.set(5, 12, 7);
+        scene.add(dl);
+        const dl2 = new THREE.DirectionalLight(0x38bdf8, 0.4);
+        dl2.position.set(-5, 5, -5);
+        scene.add(dl2);
+        
+        let angle = 0;
+        function animate() {
+          requestAnimationFrame(animate);
+          angle += 0.005;
+          bars.forEach((b, i) => {
+            b.position.y = barData[i] / 2;
+            b.scale.y = 1 + Math.sin(angle + i * 0.8) * 0.08;
+          });
+          camera.position.x = 10 * Math.sin(angle * 0.25);
+          camera.position.z = 14 * Math.cos(angle * 0.25);
+          camera.lookAt(0, 2, 0);
+          renderer.render(scene, camera);
+        }
+        animate();
+        
+        chart3dScene = scene;
+        chart3dRenderer = renderer;
+      } catch(e) { console.error('3D init:', e); }
     });
-    camera.position.x = 8 * Math.sin(angle * 0.3);
-    camera.position.z = 12 * Math.cos(angle * 0.3);
-    camera.lookAt(0, 2, 0);
-    renderer.render(scene, camera);
-  }
-  animate();
-  
-  chart3dScene = scene;
-  chart3dRenderer = renderer;
-  
-  window.addEventListener('resize', () => {
-    const w2 = container.clientWidth || 600;
-    const h2 = container.clientHeight || 400;
-    camera.aspect = w2 / h2;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w2, h2);
-  });
+  } catch(e) { console.error('3D setup:', e); }
 }
 
 document.addEventListener('keydown', (e) => {
