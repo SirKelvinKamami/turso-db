@@ -201,6 +201,11 @@
             <div class="page-header"><h2>Databases</h2><p>Create and manage your databases</p></div>
             <div class="page-body">
                 <div id="db-msg"></div>
+                <div class="card" style="margin-bottom:20px;display:none" id="setup-card">
+                    <div class="card-title">Quick Setup</div>
+                    <p style="font-size:13px;color:#64748b;margin-bottom:12px">One-click to create your database with schema and seed data. Safe to run on every deploy.</p>
+                    <button class="btn btn-primary" onclick="setupDatabase()" id="setup-btn">⚡ Initialize My Database</button>
+                </div>
                 <div class="card" style="margin-bottom:20px">
                     <div class="card-title">Create New Database</div>
                     <div style="display:flex;gap:12px">
@@ -399,6 +404,9 @@
             document.getElementById('nav-clients').style.display = 'none';
             document.getElementById('ov-account-type').textContent = 'Client';
             document.getElementById('ov-account-type').style.color = '#22c55e';
+            document.getElementById('setup-card').style.display = 'block';
+        } else {
+            document.getElementById('setup-card').style.display = 'none';
         }
 
         loadRateLimit();
@@ -497,6 +505,30 @@
     function openSql(dbId) {
         showPage('sql-editor');
         document.getElementById('sql-db-select').value = dbId;
+    }
+
+    async function setupDatabase() {
+        const btn = document.getElementById('setup-btn');
+        btn.disabled = true;
+        btn.textContent = 'Setting up...';
+        showMsg('db-msg', 'Creating database with schema...', 'info');
+        try {
+            const res = await fetch(`${API_BASE}/setup`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showMsg('db-msg', `Database "${data.database_name}" ready — ${data.schema.length} tables created`, 'success');
+                loadData();
+            } else {
+                showMsg('db-msg', data.error || 'Setup failed', 'error');
+            }
+        } catch (e) {
+            showMsg('db-msg', 'Connection error', 'error');
+        }
+        btn.disabled = false;
+        btn.textContent = '⚡ Initialize My Database';
     }
 
     async function createDatabase() {

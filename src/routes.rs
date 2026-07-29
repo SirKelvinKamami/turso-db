@@ -35,6 +35,7 @@ pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limit
         .route("/databases/{id}", get(get_database).delete(delete_database))
         .route("/databases/{id}/execute", post(execute_query))
         .route("/databases/{id}/query", post(run_query))
+        .route("/setup", post(setup_database))
         .route("/rate-limit", get(rate_limit_info))
         .with_state(state)
 }
@@ -250,6 +251,50 @@ async fn run_query(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "QUERY_ERROR".into() })))?;
     let columns = if !rows.is_empty() { (0..rows[0].len()).map(|i| format!("column_{}", i)).collect() } else { vec![] };
     Ok(Json(QueryResponse { columns, rows }))
+}
+
+async fn setup_database(
+    state: State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<SetupResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    let owner = &claims.sub;
+
+    let existing = state.db_manager.list_databases(Some(owner));
+    let (db_id, db_name) = if let Some((id, entry)) = existing.first() {
+        (id.clone(), entry.name.clone())
+    } else {
+        let name = format!("{}-hub", owner);
+        let (id, entry) = state.db_manager.create_database(&name, owner).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "SETUP_ERROR".into() })))?;
+        (id, entry.name)
+    };
+
+    let schema = vec![
+        "CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'active', created_at TEXT DEFAULT (datetime('now')))",
+        "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')))",
+    ];
+    for sql in &schema {
+        state.db_manager.execute(&db_id, sql).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "SETUP_ERROR".into() })))?;
+    }
+
+    let seeded = state.db_manager.query(&db_id, "SELECT COUNT(*) as c FROM projects").await
+        .map(|rows| rows.first().and_then(|r| r.first()).map(|c| c != "0").unwrap_or(false))
+        .unwrap_or(false);
+
+    if !seeded {
+        let _ = state.db_manager.execute(&db_id,
+            "INSERT INTO projects (name, description) VALUES ('My Project', 'Auto-created on setup')"
+        ).await;
+    }
+
+    Ok(Json(SetupResponse {
+        database_id: db_id,
+        database_name: db_name,
+        schema: schema.iter().map(|s| s.to_string()).collect(),
+        seeded: true,
+    }))
 }
 
 async fn rate_limit_info(

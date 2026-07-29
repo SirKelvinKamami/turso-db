@@ -78,6 +78,14 @@ pub struct ClientUserInfo {
 }
 
 #[derive(Debug, Serialize)]
+pub struct SetupResponse {
+    pub database_id: String,
+    pub database_name: String,
+    pub schema: Vec<String>,
+    pub seeded: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RateLimitInfo {
     pub remaining: u64,
     pub limit: u64,
