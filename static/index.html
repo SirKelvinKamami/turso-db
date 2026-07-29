@@ -8,7 +8,6 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b1120; color: #e2e8f0; min-height: 100vh; }
-
         .login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
         .login-container { max-width: 420px; width: 100%; padding: 48px 40px; background: linear-gradient(135deg, #1e293b, #0f172a); border-radius: 20px; box-shadow: 0 25px 60px -12px rgba(0,0,0,0.8); border: 1px solid #1e3a5f; }
         .login-container .logo { text-align: center; margin-bottom: 8px; }
@@ -22,7 +21,6 @@
         .divider { display: flex; align-items: center; margin: 22px 0; color: #475569; }
         .divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid #1e3a5f; }
         .divider span { padding: 0 14px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
-
         .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 240px; background: #0f172a; border-right: 1px solid #1e293b; padding: 0; display: flex; flex-direction: column; z-index: 100; }
         .sidebar-brand { padding: 20px 24px; border-bottom: 1px solid #1e293b; display: flex; align-items: center; gap: 12px; }
         .sidebar-brand svg { width: 32px; height: 32px; flex-shrink: 0; }
@@ -39,27 +37,23 @@
         .sidebar-footer .avatar { width: 32px; height: 32px; border-radius: 50%; background: #1e3a5f; display: flex; align-items: center; justify-content: center; color: #38bdf8; font-weight: 700; font-size: 14px; }
         .sidebar-footer .user-name { font-size: 13px; }
         .sidebar-footer .user-email { font-size: 11px; color: #64748b; }
+        .sidebar-footer .user-type { font-size: 10px; color: #22c55e; }
         .sidebar-footer .logout-btn { width: 100%; padding: 8px; background: transparent; border: 1px solid #1e3a5f; border-radius: 6px; color: #f87171; cursor: pointer; font-size: 12px; }
         .sidebar-footer .logout-btn:hover { background: rgba(248,113,113,0.1); }
-
         .main-content { margin-left: 240px; min-height: 100vh; }
         .page-header { background: #0f172a; padding: 20px 32px; border-bottom: 1px solid #1e293b; }
         .page-header h2 { font-size: 20px; color: #f1f5f9; }
         .page-header p { font-size: 13px; color: #64748b; margin-top: 2px; }
         .page-body { padding: 24px 32px; }
-
         .card { background: #1e293b; border-radius: 12px; border: 1px solid #1e3a5f; padding: 24px; }
         .card-title { font-size: 14px; color: #94a3b8; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
-
         .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
         .stat-card { background: #1e293b; border-radius: 12px; border: 1px solid #1e3a5f; padding: 20px; }
         .stat-card .label { color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
         .stat-card .value { font-size: 32px; font-weight: 700; color: #38bdf8; margin: 6px 0 2px; }
         .stat-card .sub { color: #475569; font-size: 12px; }
-
         .page { display: none; }
         .page.active { display: block; }
-
         .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px; }
         .btn-primary { background: #38bdf8; color: #0f172a; }
         .btn-primary:hover { background: #7dd3fc; }
@@ -70,10 +64,8 @@
         .btn-outline { background: transparent; border: 1px solid #334155; color: #94a3b8; }
         .btn-outline:hover { border-color: #38bdf8; color: #38bdf8; }
         .btn-sm { padding: 6px 12px; font-size: 12px; }
-
         input, select, textarea { width: 100%; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; font-size: 14px; transition: border-color 0.2s; }
         input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8; }
-
         .db-list { list-style: none; }
         .db-item { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: #0f172a; border-radius: 8px; margin-bottom: 8px; border: 1px solid transparent; transition: border-color 0.2s; }
         .db-item:hover { border-color: #1e3a5f; }
@@ -81,57 +73,46 @@
         .db-item .name { font-weight: 600; font-size: 14px; }
         .db-item .meta { color: #64748b; font-size: 11px; margin-top: 2px; display: flex; gap: 16px; }
         .db-item .actions { display: flex; gap: 6px; }
-
         .sql-editor { width: 100%; min-height: 140px; padding: 16px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; font-family: 'Monaco', 'Menlo', monospace; font-size: 14px; resize: vertical; line-height: 1.5; }
         .sql-toolbar { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
         .sql-toolbar select { width: auto; min-width: 200px; }
-
         .results-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
         .results-table th { padding: 10px 14px; text-align: left; border-bottom: 2px solid #1e3a5f; color: #94a3b8; font-weight: 600; background: #0f172a; }
         .results-table td { padding: 10px 14px; border-bottom: 1px solid #1e293b; }
         .results-table tr:hover td { background: rgba(56,189,248,0.03); }
-
         .msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
         .msg.success { background: rgba(34,197,94,0.1); color: #4ade80; border: 1px solid rgba(34,197,94,0.2); }
         .msg.error { background: rgba(239,68,68,0.1); color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }
         .msg.info { background: rgba(56,189,248,0.1); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.2); }
-
         .empty-state { text-align: center; padding: 48px 20px; color: #475569; }
         .empty-state svg { width: 48px; height: 48px; margin-bottom: 12px; opacity: 0.4; }
         .empty-state p { font-size: 14px; }
-
         .code-block { background: #0f172a; border: 1px solid #1e3a5f; border-radius: 8px; padding: 16px; font-family: 'Monaco', 'Menlo', monospace; font-size: 13px; color: #e2e8f0; overflow-x: auto; white-space: pre-wrap; position: relative; }
         .code-block .copy-btn { position: absolute; top: 8px; right: 8px; padding: 4px 10px; background: #1e293b; border: 1px solid #334155; border-radius: 4px; color: #94a3b8; font-size: 11px; cursor: pointer; }
         .code-block .copy-btn:hover { background: #334155; color: #e2e8f0; }
-
-        .tab-bar { display: flex; gap: 0; border-bottom: 1px solid #1e293b; margin-bottom: 20px; }
-        .tab-bar button { padding: 10px 20px; background: none; border: none; color: #64748b; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
-        .tab-bar button:hover { color: #94a3b8; }
-        .tab-bar button.active { color: #38bdf8; border-bottom-color: #38bdf8; }
-
         .settings-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid #1e293b; }
         .settings-row:last-child { border-bottom: none; }
         .settings-row .label { font-size: 13px; color: #94a3b8; }
         .settings-row .value { font-size: 13px; color: #e2e8f0; font-family: monospace; }
-
         .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; align-items: center; justify-content: center; }
         .modal-overlay.show { display: flex; }
         .modal { background: #1e293b; border-radius: 16px; padding: 32px; max-width: 520px; width: 90%; border: 1px solid #1e3a5f; }
         .modal h3 { font-size: 18px; margin-bottom: 8px; }
         .modal p { color: #64748b; font-size: 13px; margin-bottom: 20px; }
-
         .quick-start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         @media (max-width: 768px) { .quick-start-grid { grid-template-columns: 1fr; } }
-
         .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
         .badge-blue { background: rgba(56,189,248,0.15); color: #38bdf8; }
         .badge-green { background: rgba(34,197,94,0.15); color: #4ade80; }
-
+        .badge-yellow { background: rgba(234,179,8,0.15); color: #facc15; }
         #g_id_onload { display: none; }
-
         .history-item { padding: 8px 12px; background: #0f172a; border-radius: 6px; margin-bottom: 4px; font-family: monospace; font-size: 12px; color: #94a3b8; cursor: pointer; }
         .history-item:hover { color: #e2e8f0; background: #1e3a5f; }
-
+        .user-row-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #0f172a; border-radius: 8px; margin-bottom: 6px; }
+        .user-row-item .info { flex: 1; }
+        .user-row-item .username { font-weight: 600; font-size: 14px; }
+        .user-row-item .detail { color: #64748b; font-size: 11px; margin-top: 2px; display: flex; gap: 16px; }
+        .sidebar-nav a.admin-only { display: none; }
         @media (max-width: 768px) {
             .sidebar { width: 60px; }
             .sidebar-brand span, .sidebar-brand small, .sidebar-nav .nav-label, .sidebar-nav a span, .sidebar-footer .user-row, .sidebar-footer .logout-btn { display: none; }
@@ -180,6 +161,7 @@
             <a class="active" onclick="showPage('overview')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span>Overview</span></a>
             <a onclick="showPage('databases')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg><span>Databases</span></a>
             <a onclick="showPage('sql-editor')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg><span>SQL Editor</span></a>
+            <a id="nav-clients" class="admin-only" onclick="showPage('clients')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Clients</span></a>
             <div class="nav-label">Integrate</div>
             <a onclick="showPage('quickstart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>Quick Start</span></a>
             <a onclick="showPage('settings')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>Settings</span></a>
@@ -187,7 +169,11 @@
         <div class="sidebar-footer">
             <div class="user-row">
                 <div class="avatar" id="sidebarAvatar">A</div>
-                <div><div class="user-name" id="sidebarName">Admin</div><div class="user-email" id="sidebarEmail">admin@turso</div></div>
+                <div>
+                    <div class="user-name" id="sidebarName">Admin</div>
+                    <div class="user-email" id="sidebarEmail">admin@turso</div>
+                    <div class="user-type" id="sidebarUserType">admin</div>
+                </div>
             </div>
             <button class="logout-btn" onclick="logout()">Sign Out</button>
         </div>
@@ -200,9 +186,9 @@
                 <div id="overview-msg"></div>
                 <div class="stat-grid">
                     <div class="stat-card"><div class="label">Total Databases</div><div class="value" id="ov-db-count">0</div><div class="sub">Active databases</div></div>
-                    <div class="stat-card"><div class="label">Total Tables</div><div class="value" id="ov-table-count">0</div><div class="sub">Across all databases</div></div>
                     <div class="stat-card"><div class="label">Server Status</div><div class="value" style="color:#22c55e" id="ov-status">Online</div><div class="sub">v1.0.0</div></div>
-                    <div class="stat-card"><div class="label">API Version</div><div class="value" style="font-size:24px" id="ov-version">1.0.0</div><div class="sub">Turso Engine</div></div>
+                    <div class="stat-card"><div class="label">Rate Limit</div><div class="value" id="ov-rate-limit">60</div><div class="sub">Queries per minute</div></div>
+                    <div class="stat-card"><div class="label">Account Type</div><div class="value" id="ov-account-type" style="font-size:20px">Admin</div><div class="sub" id="ov-db-usage">0 / 100 databases</div></div>
                 </div>
                 <div class="card">
                     <div class="card-title">Recent Databases</div>
@@ -254,6 +240,26 @@
             </div>
         </div>
 
+        <div id="page-clients" class="page">
+            <div class="page-header"><h2>Clients</h2><p>Manage client user accounts</p></div>
+            <div class="page-body">
+                <div id="clients-msg"></div>
+                <div class="card" style="margin-bottom:20px">
+                    <div class="card-title">Create Client User</div>
+                    <p style="font-size:13px;color:#64748b;margin-bottom:16px">Each client gets their own login. They will only see their own databases.</p>
+                    <div style="display:flex;gap:12px;flex-wrap:wrap">
+                        <input type="text" id="new-client-username" placeholder="Username" style="flex:1;min-width:150px">
+                        <input type="password" id="new-client-password" placeholder="Password" style="flex:1;min-width:150px">
+                        <button class="btn btn-success" onclick="createClientUser()">Create Client</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Client Users</div>
+                    <div id="clients-list"><div class="empty-state"><p>Loading clients...</p></div></div>
+                </div>
+            </div>
+        </div>
+
         <div id="page-quickstart" class="page">
             <div class="page-header"><h2>Quick Start</h2><p>Integrate TursoDB into your projects</p></div>
             <div class="page-body">
@@ -261,24 +267,24 @@
                 <div class="quick-start-grid">
                     <div class="card">
                         <div class="card-title">REST API</div>
-                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Use any HTTP client to connect. Your API base URL:</p>
+                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Your API base URL:</p>
                         <div class="code-block" id="qs-api-url">https://turso-db-8svn.onrender.com<button class="copy-btn" onclick="copyText('qs-api-url')">Copy</button></div>
-                        <p style="font-size:13px;color:#94a3b8;margin:16px 0 8px">List databases (with your token):</p>
+                        <p style="font-size:13px;color:#94a3b8;margin:16px 0 8px">List databases:</p>
                         <div class="code-block">curl -H "Authorization: Bearer YOUR_TOKEN" \<br>  https://turso-db-8svn.onrender.com/v1/databases<button class="copy-btn" onclick="copyText(this)">Copy</button></div>
                     </div>
                     <div class="card">
                         <div class="card-title">JavaScript / Node.js</div>
-                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Fetch wrapper for your frontend or Node app:</p>
+                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Fetch wrapper:</p>
                         <div class="code-block">const API = "https://turso-db-8svn.onrender.com/v1";<br>const TOKEN = "YOUR_TOKEN";<br><br>async function query(db, sql) {<br>  const r = await fetch(`${API}/databases/${db}/query`, {<br>    method: "POST",<br>    headers: { "Authorization": `Bearer ${TOKEN}`, "Content-Type": "application/json" },<br>    body: JSON.stringify({ sql })<br>  });<br>  return r.json();<br>}</div>
                     </div>
                     <div class="card">
                         <div class="card-title">Python</div>
-                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Use the requests library:</p>
+                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Requests library example:</p>
                         <div class="code-block">import requests<br><br>API = "https://turso-db-8svn.onrender.com/v1"<br>HEADERS = {"Authorization": "Bearer YOUR_TOKEN"}<br><br>def query(db, sql):<br>    r = requests.post(f"{API}/databases/{db}/query",<br>                      json={"sql": sql}, headers=HEADERS)<br>    return r.json()</div>
                     </div>
                     <div class="card">
                         <div class="card-title">Go</div>
-                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Simple HTTP client example:</p>
+                        <p style="font-size:13px;color:#94a3b8;margin-bottom:12px">Simple HTTP client:</p>
                         <div class="code-block">package main<br><br>import ("fmt"; "net/http"; "io")<br><br>func main() {<br>  url := "https://turso-db-8svn.onrender.com/v1/health"<br>  resp, _ := http.Get(url)<br>  body, _ := io.ReadAll(resp.Body)<br>  fmt.Println(string(body))<br>}</div>
                     </div>
                 </div>
@@ -292,8 +298,8 @@
                 <div class="card" style="margin-bottom:20px">
                     <div class="card-title">Profile</div>
                     <div class="settings-row"><span class="label">Name</span><span class="value" id="set-name">Admin</span></div>
-                    <div class="settings-row"><span class="label">Email</span><span class="value" id="set-email">admin@turso.io</span></div>
-                    <div class="settings-row"><span class="label">Auth Type</span><span class="value" id="set-auth">Admin Login</span></div>
+                    <div class="settings-row"><span class="label">Email / Username</span><span class="value" id="set-email">admin@turso.io</span></div>
+                    <div class="settings-row"><span class="label">Account Type</span><span class="value" id="set-auth">Admin</span></div>
                     <div class="settings-row"><span class="label">API Token</span><span class="value" id="set-token" style="font-size:11px;word-break:break-all">-</span></div>
                 </div>
                 <div class="card">
@@ -302,6 +308,7 @@
                     <div class="settings-row"><span class="label">Health Endpoint</span><span class="value">/v1/health</span></div>
                     <div class="settings-row"><span class="label">Auth Endpoint</span><span class="value">/v1/auth/login</span></div>
                     <div class="settings-row"><span class="label">Engine</span><span class="value">Turso (SQLite-compatible)</span></div>
+                    <div class="settings-row"><span class="label">Rate Limit</span><span class="value">60 requests/minute per IP</span></div>
                 </div>
             </div>
         </div>
@@ -311,8 +318,9 @@
 <script>
     const API_BASE = '/v1';
     let token = localStorage.getItem('token');
-    const userEmail = localStorage.getItem('user-email');
-    const userName = localStorage.getItem('user-name');
+    const storedEmail = localStorage.getItem('user-email');
+    const storedName = localStorage.getItem('user-name');
+    let userType = localStorage.getItem('user-type') || '';
     let databases = [];
     let queryHistory = JSON.parse(localStorage.getItem('queryHistory') || '[]');
 
@@ -331,8 +339,12 @@
             const data = await res.json();
             if (res.ok) {
                 token = data.token;
+                const u = data.user;
+                userType = u.type;
                 localStorage.setItem('token', token);
-                localStorage.setItem('user-email', username);
+                localStorage.setItem('user-email', u.username);
+                localStorage.setItem('user-name', u.username);
+                localStorage.setItem('user-type', userType);
                 document.getElementById('loginPage').style.display = 'none';
                 document.getElementById('app').style.display = 'flex';
                 initApp();
@@ -355,9 +367,11 @@
         .then(data => {
             if (data.token) {
                 token = data.token;
+                userType = 'user';
                 localStorage.setItem('token', token);
                 localStorage.setItem('user-email', payload.email);
                 localStorage.setItem('user-name', payload.name);
+                localStorage.setItem('user-type', 'user');
                 document.getElementById('loginPage').style.display = 'none';
                 document.getElementById('app').style.display = 'flex';
                 initApp();
@@ -371,13 +385,23 @@
     function initApp() {
         const email = localStorage.getItem('user-email') || 'Admin';
         const name = localStorage.getItem('user-name') || email.split('@')[0] || 'Admin';
+        userType = localStorage.getItem('user-type') || 'admin';
         document.getElementById('sidebarEmail').textContent = email;
         document.getElementById('sidebarName').textContent = name;
         document.getElementById('sidebarAvatar').textContent = name.charAt(0).toUpperCase();
+        document.getElementById('sidebarUserType').textContent = userType === 'admin' ? 'Administrator' : 'Client User';
         document.getElementById('set-name').textContent = name;
         document.getElementById('set-email').textContent = email;
-        document.getElementById('set-auth').textContent = email === 'admin' ? 'Admin Login' : 'Google OAuth';
+        document.getElementById('set-auth').textContent = userType === 'admin' ? 'Admin Login' : 'Client User';
         document.getElementById('set-token').textContent = token;
+
+        if (userType === 'user') {
+            document.getElementById('nav-clients').style.display = 'none';
+            document.getElementById('ov-account-type').textContent = 'Client';
+            document.getElementById('ov-account-type').style.color = '#22c55e';
+        }
+
+        loadRateLimit();
         loadData();
     }
 
@@ -386,19 +410,26 @@
         document.querySelectorAll('.sidebar-nav a').forEach(a => a.classList.remove('active'));
         document.getElementById(`page-${page}`).classList.add('active');
         const links = document.querySelectorAll('.sidebar-nav a');
-        const pages = ['overview', 'databases', 'sql-editor', 'quickstart', 'settings'];
-        links[pages.indexOf(page)]?.classList.add('active');
+        const pages = ['overview', 'databases', 'sql-editor', 'clients', 'quickstart', 'settings'];
+        const idx = pages.indexOf(page);
+        if (idx >= 0 && links[idx]) links[idx].classList.add('active');
         if (page === 'overview' || page === 'databases') loadData();
+        if (page === 'clients') loadClients();
     }
 
     function logout() {
         token = null;
-        localStorage.removeItem('token');
-        localStorage.removeItem('user-email');
-        localStorage.removeItem('user-name');
+        ['token','user-email','user-name','user-type'].forEach(k => localStorage.removeItem(k));
         document.getElementById('app').style.display = 'none';
         document.getElementById('loginPage').style.display = 'flex';
         if (window.google?.accounts) google.accounts.id.disableAutoSelect();
+    }
+
+    async function loadRateLimit() {
+        try {
+            const rl = await fetch(`${API_BASE}/rate-limit`).then(r => r.json());
+            document.getElementById('ov-rate-limit').textContent = rl.limit || 60;
+        } catch (_) {}
     }
 
     async function loadData() {
@@ -414,13 +445,17 @@
 
     function renderOverview() {
         document.getElementById('ov-db-count').textContent = databases.length;
-        document.getElementById('ov-table-count').textContent = databases.length > 0 ? '~' + (databases.length * 2) : '0';
+        const maxDbs = userType === 'admin' ? 100 : 20;
+        document.getElementById('ov-db-usage').textContent = `${databases.length} / ${maxDbs} databases`;
+
         const list = document.getElementById('ov-db-list');
         if (databases.length === 0) {
             list.innerHTML = '<div class="empty-state"><p>No databases yet. Create one from the Databases page.</p></div>';
         } else {
             list.innerHTML = databases.slice(0, 5).map(db => `
-                <li class="db-item"><div class="name">${db}</div><span class="badge badge-blue">Active</span></li>
+                <li class="db-item">
+                    <div class="info"><div class="name">${db.name || db.id}</div><div class="meta">${db.owner ? '<span class="badge badge-yellow">'+db.owner+'</span>' : ''}</div></div>
+                </li>
             `).join('');
         }
     }
@@ -434,12 +469,16 @@
         list.innerHTML = databases.map(db => `
             <li class="db-item">
                 <div class="info">
-                    <div class="name">${db}</div>
-                    <div class="meta"><span>ID: ${db}</span><span class="badge badge-green">SQLite</span></div>
+                    <div class="name">${db.name || db.id}</div>
+                    <div class="meta">
+                        <span>ID: ${db.id ? db.id.substring(0, 12)+'...' : db}</span>
+                        ${db.owner ? '<span class="badge badge-yellow">'+db.owner+'</span>' : ''}
+                        <span class="badge badge-green">SQLite</span>
+                    </div>
                 </div>
                 <div class="actions">
-                    <button class="btn btn-outline btn-sm" onclick="openSql('${db}')">Query</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteDb('${db}')">Delete</button>
+                    <button class="btn btn-outline btn-sm" onclick="openSql('${db.id || db}')">Query</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteDb('${db.id || db}')">Delete</button>
                 </div>
             </li>
         `).join('');
@@ -452,7 +491,7 @@
             return;
         }
         sel.innerHTML = '<option value="">Select a database</option>' +
-            databases.map(db => `<option value="${db}">${db}</option>`).join('');
+            databases.map(db => `<option value="${db.id || db}">${db.name || db}</option>`).join('');
     }
 
     function openSql(dbId) {
@@ -482,14 +521,14 @@
         }
     }
 
-    async function deleteDb(name) {
-        if (!confirm(`Delete database "${name}"? This cannot be undone.`)) return;
+    async function deleteDb(id) {
+        if (!confirm(`Delete database? This cannot be undone.`)) return;
         try {
-            await fetch(`${API_BASE}/databases/${name}`, {
+            await fetch(`${API_BASE}/databases/${id}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
             });
-            showMsg('db-msg', `"${name}" deleted`, 'success');
+            showMsg('db-msg', `Database deleted`, 'success');
             loadData();
         } catch (e) {
             showMsg('db-msg', 'Delete failed', 'error');
@@ -574,6 +613,77 @@
         const h = queryHistory[i];
         document.getElementById('sql-db-select').value = h.db;
         document.getElementById('sql-input').value = h.sql;
+    }
+
+    async function loadClients() {
+        if (userType !== 'admin') { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>Admin access required</p></div>'; return; }
+        try {
+            const res = await fetch(`${API_BASE}/users`, { headers: { 'Authorization': `Bearer ${token}` } });
+            if (!res.ok) { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>Failed to load clients</p></div>'; return; }
+            const users = await res.json();
+            if (users.length === 0) {
+                document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>No client users yet. Create one above.</p></div>';
+                return;
+            }
+            document.getElementById('clients-list').innerHTML = users.map(u => `
+                <div class="user-row-item">
+                    <div class="info">
+                        <div class="username">${u.username}</div>
+                        <div class="detail">
+                            <span>ID: ${u.id.substring(0, 12)}...</span>
+                            <span>Created: ${new Date(u.created_at).toLocaleDateString()}</span>
+                            <span>Databases: ${u.database_count || 0}</span>
+                        </div>
+                    </div>
+                    <button class="btn btn-danger btn-sm" onclick="deleteClient('${u.username}')">Delete</button>
+                </div>
+            `).join('');
+        } catch (e) {
+            document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>Error loading clients</p></div>';
+        }
+    }
+
+    async function createClientUser() {
+        const username = document.getElementById('new-client-username').value.trim();
+        const password = document.getElementById('new-client-password').value.trim();
+        if (!username || !password) { showMsg('clients-msg', 'Enter username and password', 'error'); return; }
+        try {
+            const res = await fetch(`${API_BASE}/auth/signup`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ username, password })
+            });
+            if (res.ok) {
+                document.getElementById('new-client-username').value = '';
+                document.getElementById('new-client-password').value = '';
+                showMsg('clients-msg', `Client "${username}" created`, 'success');
+                loadClients();
+            } else {
+                const data = await res.json();
+                showMsg('clients-msg', data.error || 'Failed', 'error');
+            }
+        } catch (e) {
+            showMsg('clients-msg', 'Connection error', 'error');
+        }
+    }
+
+    async function deleteClient(username) {
+        if (!confirm(`Delete client "${username}" and all their databases?`)) return;
+        try {
+            const res = await fetch(`${API_BASE}/users/${username}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                showMsg('clients-msg', `Client "${username}" deleted`, 'success');
+                loadClients();
+                loadData();
+            } else {
+                showMsg('clients-msg', 'Delete failed', 'error');
+            }
+        } catch (e) {
+            showMsg('clients-msg', 'Connection error', 'error');
+        }
     }
 
     document.addEventListener('keydown', (e) => {
