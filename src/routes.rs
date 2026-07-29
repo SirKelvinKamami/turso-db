@@ -1,26 +1,54 @@
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    routing::{get, post},
+    routing::{get, post, delete},
     Json, Router,
 };
 use chrono::Utc;
 
-use crate::auth::{create_token, verify_token, extract_token_from_header, generate_api_key, TokenResponse};
+use crate::auth::{create_token, verify_token, extract_token_from_header, generate_api_key, is_admin, Claims};
 use crate::config::Config;
 use crate::db::DatabaseManager;
 use crate::models::*;
+use crate::ratelimit::RateLimiter;
+use crate::users::UserStore;
 
-pub fn api_routes(db_manager: DatabaseManager) -> Router {
+#[derive(Clone)]
+pub struct AppState {
+    pub db_manager: DatabaseManager,
+    pub user_store: UserStore,
+    pub rate_limiter: RateLimiter,
+}
+
+pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limiter: RateLimiter) -> Router {
+    let state = AppState { db_manager, user_store, rate_limiter };
+
     Router::new()
         .route("/health", get(health_check))
         .route("/auth/login", post(login))
         .route("/auth/google-token", post(google_token))
+        .route("/auth/signup", post(signup))
+        .route("/users", get(list_users))
+        .route("/users/me", get(current_user))
+        .route("/users/{username}", delete(delete_user))
         .route("/databases", get(list_databases).post(create_database))
         .route("/databases/{id}", get(get_database).delete(delete_database))
         .route("/databases/{id}/execute", post(execute_query))
         .route("/databases/{id}/query", post(run_query))
-        .with_state(db_manager)
+        .route("/rate-limit", get(rate_limit_info))
+        .with_state(state)
+}
+
+fn check_rate_limit(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    state.rate_limiter.check(&ip).map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+    Ok(())
 }
 
 async fn health_check() -> Json<serde_json::Value> {
@@ -31,18 +59,226 @@ async fn health_check() -> Json<serde_json::Value> {
     }))
 }
 
-async fn login(Json(payload): Json<LoginRequest>) -> Result<Json<TokenResponse>, (StatusCode, Json<ErrorResponse>)> {
+async fn login(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<LoginRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let _ = check_rate_limit(&state, &headers);
+
     let config = Config::load().expect("Failed to load config");
-    
+
     let admin_user = std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
     let admin_pass = std::env::var("ADMIN_PASSWORD").expect("ADMIN_PASSWORD must be set in .env");
-    
+
     if payload.username == admin_user && payload.password == admin_pass {
-        let token = create_token(&payload.username, &config.jwt_secret, config.jwt_expiry_hours)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "TOKEN_ERROR".into() })))?;
-        Ok(Json(TokenResponse { token }))
+        let token = create_token(&payload.username, "admin", &config.jwt_secret, config.jwt_expiry_hours)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        return Ok(Json(serde_json::json!({"token": token, "user": {"username": payload.username, "type": "admin"}})));
+    }
+
+    if let Ok(user) = state.user_store.verify_password(&payload.username, &payload.password) {
+        let token = create_token(&user.username, "user", &config.jwt_secret, config.jwt_expiry_hours)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
+        return Ok(Json(serde_json::json!({"token": token, "user": {"username": user.username, "id": user.id, "type": "user"}})));
+    }
+
+    Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid credentials", "code": "AUTH_FAILED"}))))
+}
+
+async fn google_token(
+    Json(payload): Json<GoogleTokenRequest>,
+) -> Result<Json<UserResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let config = Config::load().expect("Failed to load config");
+    let jwt_token = create_token(&payload.email, "user", &config.jwt_secret, config.jwt_expiry_hours)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "JWT_ERROR".into() })))?;
+    Ok(Json(UserResponse { id: generate_api_key(), email: payload.email, name: payload.name, token: jwt_token }))
+}
+
+async fn signup(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateUserRequest>,
+) -> Result<Json<UserInfo>, (StatusCode, Json<ErrorResponse>)> {
+    authenticate_admin(&headers)?;
+    let user = state.user_store.create_user(&payload.username, &payload.password)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
+    tracing::info!("Created user: {}", user.username);
+    Ok(Json(UserInfo { id: user.id, username: user.username, created_at: user.created_at }))
+}
+
+async fn list_users(
+    state: State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ClientUserInfo>>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    if claims.typ != "admin" {
+        return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin only".into(), code: "FORBIDDEN".into() })));
+    }
+    let mut result: Vec<ClientUserInfo> = state.user_store.list_users().iter().map(|u| {
+        let db_count = state.db_manager.list_databases(Some(&u.username)).len();
+        ClientUserInfo { id: u.id.clone(), username: u.username.clone(), created_at: u.created_at.clone(), database_count: db_count }
+    }).collect();
+    result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    Ok(Json(result))
+}
+
+async fn current_user(
+    state: State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    let db_count = if claims.typ == "admin" {
+        state.db_manager.list_databases(None).len()
     } else {
-        Err((StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid credentials".into(), code: "AUTH_FAILED".into() })))
+        state.db_manager.list_databases(Some(&claims.sub)).len()
+    };
+    Ok(Json(serde_json::json!({"username": claims.sub, "type": claims.typ, "database_count": db_count})))
+}
+
+async fn delete_user(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(username): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    authenticate_admin(&headers)?;
+    if is_admin(&username) {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Cannot delete admin".into(), code: "USER_ERROR".into() })));
+    }
+    state.user_store.delete_user(&username)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
+    let dbs = state.db_manager.list_databases(Some(&username));
+    for (id, _) in dbs {
+        let _ = state.db_manager.delete_database(&id).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_databases(
+    state: State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<DatabaseResponse>>, (StatusCode, Json<ErrorResponse>)> {
+    let _ = check_rate_limit(&state, &headers);
+    let claims = authenticate(&headers)?;
+    let owner = if claims.typ == "admin" { None } else { Some(claims.sub.as_str()) };
+    let databases = state.db_manager.list_databases(owner);
+    Ok(Json(databases.into_iter().map(|(id, entry)| DatabaseResponse {
+        id, name: entry.name, owner: entry.owner, created_at: entry.created_at,
+    }).collect()))
+}
+
+async fn create_database(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateDatabaseRequest>,
+) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let _ = check_rate_limit(&state, &headers);
+    let claims = authenticate(&headers)?;
+    let owner = &claims.sub;
+
+    let config = Config::load().expect("Failed to load config");
+    let user_db_count = state.db_manager.list_databases(Some(owner)).len();
+    let max_for_user = if claims.typ == "admin" { config.max_databases } else { 20 };
+    if user_db_count >= max_for_user {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
+            error: format!("Maximum databases ({}) reached", max_for_user),
+            code: "LIMIT_REACHED".into(),
+        })));
+    }
+
+    let (id, entry) = state.db_manager.create_database(&payload.name, owner).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "CREATE_ERROR".into() })))?;
+
+    Ok(Json(DatabaseResponse { id, name: entry.name, owner: entry.owner, created_at: entry.created_at }))
+}
+
+async fn get_database(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    let (_, entry) = state.db_manager.get_database(&id).await
+        .map_err(|_| (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Database not found".into(), code: "NOT_FOUND".into() })))?;
+    Ok(Json(DatabaseResponse { id, name: entry.name, owner: entry.owner, created_at: entry.created_at }))
+}
+
+async fn delete_database(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    state.db_manager.delete_database(&id).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "DELETE_ERROR".into() })))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn execute_query(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<ExecuteRequest>,
+) -> Result<Json<ExecuteResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let _ = check_rate_limit(&state, &headers);
+    let claims = authenticate(&headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    let result = state.db_manager.execute(&id, &payload.sql).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "EXECUTE_ERROR".into() })))?;
+    Ok(Json(ExecuteResponse { success: true, message: result }))
+}
+
+async fn run_query(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<ExecuteRequest>,
+) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let _ = check_rate_limit(&state, &headers);
+    let claims = authenticate(&headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    let rows = state.db_manager.query(&id, &payload.sql).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "QUERY_ERROR".into() })))?;
+    let columns = if !rows.is_empty() { (0..rows[0].len()).map(|i| format!("column_{}", i)).collect() } else { vec![] };
+    Ok(Json(QueryResponse { columns, rows }))
+}
+
+async fn rate_limit_info(
+    state: State<AppState>,
+) -> Json<RateLimitInfo> {
+    Json(RateLimitInfo {
+        remaining: state.rate_limiter.max_requests(),
+        limit: state.rate_limiter.max_requests(),
+        window_secs: state.rate_limiter.window_secs(),
+    })
+}
+
+fn authenticate(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
+    let config = Config::load().expect("Failed to load config");
+    let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok())
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Missing authorization header".into(), code: "UNAUTHORIZED".into() })))?;
+    let token = extract_token_from_header(auth_header)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid authorization format".into(), code: "UNAUTHORIZED".into() })))?;
+    verify_token(&token, &config.jwt_secret)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid or expired token".into(), code: "UNAUTHORIZED".into() })))
+}
+
+fn authenticate_admin(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(headers)?;
+    if claims.typ != "admin" {
+        return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin access required".into(), code: "FORBIDDEN".into() })));
+    }
+    Ok(claims)
+}
+
+fn check_db_owner(state: &AppState, db_id: &str, user: &str, user_type: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if user_type == "admin" { return Ok(()); }
+    match state.db_manager.get_db_owner(db_id) {
+        Some(owner) if owner == user => Ok(()),
+        Some(_) => Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Not your database".into(), code: "FORBIDDEN".into() }))),
+        None => Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Database not found".into(), code: "NOT_FOUND".into() }))),
     }
 }
 
@@ -50,135 +286,4 @@ async fn login(Json(payload): Json<LoginRequest>) -> Result<Json<TokenResponse>,
 pub struct GoogleTokenRequest {
     pub email: String,
     pub name: String,
-}
-
-async fn google_token(
-    Json(payload): Json<GoogleTokenRequest>,
-) -> Result<Json<UserResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let config = Config::load().expect("Failed to load config");
-    
-    let jwt_token = create_token(&payload.email, &config.jwt_secret, config.jwt_expiry_hours)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "JWT_ERROR".into() })))?;
-    
-    Ok(Json(UserResponse {
-        id: generate_api_key(),
-        email: payload.email,
-        name: payload.name,
-        token: jwt_token,
-    }))
-}
-
-async fn list_databases(
-    State(db_manager): State<DatabaseManager>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<String>>, (StatusCode, Json<ErrorResponse>)> {
-    authenticate(&headers)?;
-    Ok(Json(db_manager.list_databases()))
-}
-
-async fn create_database(
-    State(db_manager): State<DatabaseManager>,
-    headers: HeaderMap,
-    Json(payload): Json<CreateDatabaseRequest>,
-) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
-    authenticate(&headers)?;
-    
-    let id = db_manager.create_database(&payload.name).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "CREATE_ERROR".into() })))?;
-    
-    Ok(Json(DatabaseResponse {
-        id,
-        name: payload.name,
-        created_at: Utc::now().to_rfc3339(),
-    }))
-}
-
-async fn get_database(
-    State(db_manager): State<DatabaseManager>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
-    authenticate(&headers)?;
-    
-    db_manager.get_database(&id).await
-        .map_err(|_| (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Database not found".into(), code: "NOT_FOUND".into() })))?;
-    
-    Ok(Json(DatabaseResponse {
-        id: id.clone(),
-        name: format!("Database {}", id),
-        created_at: Utc::now().to_rfc3339(),
-    }))
-}
-
-async fn delete_database(
-    State(db_manager): State<DatabaseManager>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    authenticate(&headers)?;
-    
-    db_manager.delete_database(&id).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "DELETE_ERROR".into() })))?;
-    
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn execute_query(
-    State(db_manager): State<DatabaseManager>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(payload): Json<ExecuteRequest>,
-) -> Result<Json<ExecuteResponse>, (StatusCode, Json<ErrorResponse>)> {
-    authenticate(&headers)?;
-    
-    let result = db_manager.execute(&id, &payload.sql).await
-        .map_err(|e| {
-            tracing::error!("Execute error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "EXECUTE_ERROR".into() }))
-        })?;
-    
-    Ok(Json(ExecuteResponse {
-        success: true,
-        message: result,
-    }))
-}
-
-async fn run_query(
-    State(db_manager): State<DatabaseManager>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(payload): Json<ExecuteRequest>,
-) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
-    authenticate(&headers)?;
-    
-    let rows = db_manager.query(&id, &payload.sql).await
-        .map_err(|e| {
-            tracing::error!("Query error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "QUERY_ERROR".into() }))
-        })?;
-    
-    let columns = if !rows.is_empty() {
-        (0..rows[0].len()).map(|i| format!("column_{}", i)).collect()
-    } else {
-        vec![]
-    };
-    
-    Ok(Json(QueryResponse { columns, rows }))
-}
-
-fn authenticate(headers: &HeaderMap) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    let config = Config::load().expect("Failed to load config");
-    
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Missing authorization header".into(), code: "UNAUTHORIZED".into() })))?;
-    
-    let token = extract_token_from_header(auth_header)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid authorization format".into(), code: "UNAUTHORIZED".into() })))?;
-    
-    verify_token(&token, &config.jwt_secret)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid or expired token".into(), code: "UNAUTHORIZED".into() })))?;
-    
-    Ok(())
 }

@@ -9,6 +9,7 @@ pub struct CreateDatabaseRequest {
 pub struct DatabaseResponse {
     pub id: String,
     pub name: String,
+    pub owner: String,
     pub created_at: String,
 }
 
@@ -53,4 +54,32 @@ pub struct UserResponse {
     pub email: String,
     pub name: String,
     pub token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserInfo {
+    pub id: String,
+    pub username: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClientUserInfo {
+    pub id: String,
+    pub username: String,
+    pub created_at: String,
+    pub database_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RateLimitInfo {
+    pub remaining: u64,
+    pub limit: u64,
+    pub window_secs: u64,
 }

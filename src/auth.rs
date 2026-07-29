@@ -6,6 +6,7 @@ use uuid::Uuid;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
+    pub typ: String,
     pub exp: usize,
 }
 
@@ -14,9 +15,10 @@ pub struct TokenResponse {
     pub token: String,
 }
 
-pub fn create_token(user_id: &str, secret: &str, expiry_hours: u64) -> Result<String, Box<dyn std::error::Error>> {
+pub fn create_token(user_id: &str, user_type: &str, secret: &str, expiry_hours: u64) -> Result<String, Box<dyn std::error::Error>> {
     let claims = Claims {
         sub: user_id.to_string(),
+        typ: user_type.to_string(),
         exp: chrono::Utc::now()
             .checked_add_signed(chrono::Duration::hours(expiry_hours as i64))
             .expect("valid timestamp")
@@ -51,4 +53,8 @@ pub fn extract_token_from_header(auth_header: &str) -> Result<String, StatusCode
 
 pub fn generate_api_key() -> String {
     Uuid::new_v4().to_string()
+}
+
+pub fn is_admin(username: &str) -> bool {
+    username == "admin"
 }
