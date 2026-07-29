@@ -21,6 +21,10 @@ pub struct UserStore {
 }
 
 impl UserStore {
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
+
     pub fn new(data_dir: &str) -> Result<Self, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(data_dir)?;
         let file_path = format!("{}/users.json", data_dir);
