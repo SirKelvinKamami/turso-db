@@ -1,74 +1,37 @@
-// DAS Creatives Hub — One-shot setup script
-// Run this after every Render deploy to re-create the database + schema.
-// Uses the REST API (no @libsql/client needed).
+// DAS Creatives Hub — One-shot setup
+// Just paste this in browser console devtools on the dashboard page.
+// Or use it as a regular module.
 
 const API = 'https://turso-db-8svn.onrender.com/v1';
 const USER = 'das-creatives';
 const PASS = 'nw2a.-QVN-85L||8';
 
 async function setup() {
-  // 1. Login
   const login = await fetch(`${API}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: USER, password: PASS }),
   });
-  if (!login.ok) throw new Error('Login failed: ' + (await login.json()).error);
+  if (!login.ok) throw new Error('Login: ' + (await login.json()).error);
   const { token } = await login.json();
-  console.log('Logged in');
 
-  // 2. Create database
-  const dbRes = await fetch(`${API}/databases`, {
+  const res = await fetch(`${API}/setup`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'das-creatives-hub' }),
+    headers: { 'Authorization': `Bearer ${token}` },
   });
-  if (!dbRes.ok && !dbRes.status.toString().startsWith('4')) throw new Error('DB create failed');
-  const db = await dbRes.json();
-  const dbId = db.id;
-  console.log('Database:', dbId);
+  if (!res.ok) throw new Error('Setup: ' + (await res.json()).error);
+  const data = await res.json();
 
-  // 3. Create tables
-  const sqls = [
-    `CREATE TABLE IF NOT EXISTS projects (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      description TEXT,
-      status TEXT DEFAULT 'active',
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id INTEGER,
-      title TEXT NOT NULL,
-      description TEXT,
-      status TEXT DEFAULT 'pending',
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `INSERT INTO projects (name, description)
-     VALUES ('DAS Creatives Hub', 'Creative platform for digital assets')`,
-  ];
-
-  for (const sql of sqls) {
-    const r = await fetch(`${API}/databases/${dbId}/execute`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sql }),
-    });
-    if (!r.ok) throw new Error('SQL failed: ' + (await r.json()).error);
-  }
-
-  console.log('Tables created, project seeded');
-  console.log('DB ID:', dbId);
-  return { dbId, token };
+  console.log('Database ID:', data.database_id);
+  console.log('Tables:', data.schema);
+  return data;
 }
 
-// Run it:
-// setup().then(console.log).catch(console.error);
+// Run: setup().then(d => console.log('Ready:', d.database_id));
 
-// After setup, use the returned token for queries:
-// fetch(`${API}/databases/${dbId}/query`, {
+// --- Query after setup ---
+// fetch(`${API}/databases/${DB_ID}/query`, {
 //   method: 'POST',
-//   headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+//   headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
 //   body: JSON.stringify({ sql: 'SELECT * FROM projects' }),
 // }).then(r => r.json()).then(console.log);
