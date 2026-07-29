@@ -34,6 +34,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_manager = DatabaseManager::new(&config.data_dir).await?;
 
     let user_store = UserStore::new(&config.data_dir)?;
+
+    for (username, password) in &config.seed_users {
+        match user_store.create_user(username, password) {
+            Ok(u) => tracing::info!("Seeded user: {}", u.username),
+            Err(e) => tracing::warn!("Seed user {}: {}", username, e),
+        }
+    }
+
     let user_store_arc = Arc::new(user_store);
 
     let rate_limiter = RateLimiter::new(config.max_queries_per_minute, 60);
