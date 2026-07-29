@@ -2,8 +2,11 @@ mod auth;
 mod config;
 mod db;
 mod models;
+mod ratelimit;
 mod routes;
+mod users;
 
+use std::sync::Arc;
 use axum::Router;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -12,13 +15,13 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::Config;
 use crate::db::DatabaseManager;
+use crate::users::UserStore;
+use crate::ratelimit::RateLimiter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load configuration
     let config = Config::load()?;
 
-    // Initialize logging
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| "turso_service=info,tower_http=info".into()))
@@ -28,17 +31,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting Turso Service v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Data directory: {}", config.data_dir);
 
-    // Initialize database manager
-    let db_manager = DatabaseManager::new(&config.data_dir, &config.encryption_key).await?;
+    let db_manager = DatabaseManager::new(&config.data_dir).await?;
 
-    // Build router with static files
+    let user_store = UserStore::new(&config.data_dir)?;
+    let user_store_arc = Arc::new(user_store);
+
+    let rate_limiter = RateLimiter::new(config.max_queries_per_minute, 60);
+
     let app = Router::new()
-        .nest("/v1", routes::api_routes(db_manager.clone()))
+        .nest("/v1", routes::api_routes(db_manager.clone(), (*user_store_arc).clone(), rate_limiter))
         .fallback_service(ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
-    // Start server
     let listener = tokio::net::TcpListener::bind(&config.bind_address).await?;
     tracing::info!("Server listening on {}", config.bind_address);
     tracing::info!("Web UI: http://{}/", config.bind_address);
