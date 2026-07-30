@@ -10,7 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0e1a; color: #e2e8f0; min-height: 100vh; overflow-x: hidden; }
+body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0e1a; color: #e2e8f0; min-height: 100vh; overflow-x: hidden; background-image: radial-gradient(circle at 25% 0, rgba(56,189,248,0.03) 0%, transparent 50%), radial-gradient(circle at 75% 100%, rgba(129,140,248,0.03) 0%, transparent 50%); }
 
 /* ---- Login Page ---- */
 .login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; position: relative; }
@@ -42,9 +42,15 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0e1a; col
 .msg.success { background: rgba(34,197,94,0.1); color: #4ade80; border: 1px solid rgba(34,197,94,0.2); }
 .msg.error { background: rgba(239,68,68,0.1); color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }
 .msg.info { background: rgba(56,189,248,0.1); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.2); }
+#toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.toast { padding: 14px 20px; border-radius: 12px; font-size: 13px; font-weight: 500; backdrop-filter: blur(20px); box-shadow: 0 8px 32px rgba(0,0,0,0.4); pointer-events: auto; animation: slideIn 0.3s ease; max-width: 380px; border: 1px solid; }
+.toast-success { background: rgba(22,163,74,0.25); color: #4ade80; border-color: rgba(34,197,94,0.3); }
+.toast-error { background: rgba(220,38,38,0.25); color: #fca5a5; border-color: rgba(239,68,68,0.3); }
+.toast-info { background: rgba(56,189,248,0.15); color: #7dd3fc; border-color: rgba(56,189,248,0.25); }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
 /* ---- App Layout ---- */
-#app { display: none; }
+#app { display: none; min-height: 100vh; background: transparent; }
 .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 250px; background: rgba(15,23,42,0.95); backdrop-filter: blur(20px); border-right: 1px solid rgba(56,189,248,0.06); padding: 0; display: flex; flex-direction: column; z-index: 100; }
 .sidebar-brand { padding: 20px 24px; border-bottom: 1px solid rgba(56,189,248,0.06); display: flex; align-items: center; gap: 12px; }
 .sidebar-brand svg { width: 28px; height: 28px; flex-shrink: 0; }
@@ -52,9 +58,10 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0e1a; col
 .sidebar-brand .brand-sub { font-size: 10px; color: #475569; font-weight: 400; }
 .sidebar-nav { flex: 1; padding: 12px; overflow-y: auto; }
 .sidebar-nav .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #475569; padding: 16px 12px 6px; font-weight: 600; }
-.sidebar-nav a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; color: #94a3b8; text-decoration: none; border-radius: 8px; font-size: 13px; margin-bottom: 2px; transition: all 0.15s; cursor: pointer; }
+.sidebar-nav a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; color: #94a3b8; text-decoration: none; border-radius: 8px; font-size: 13px; margin-bottom: 2px; transition: all 0.2s; cursor: pointer; position: relative; }
 .sidebar-nav a:hover { background: rgba(56,189,248,0.06); color: #e2e8f0; }
-.sidebar-nav a.active { background: rgba(56,189,248,0.1); color: #38bdf8; font-weight: 600; }
+.sidebar-nav a.active { background: linear-gradient(90deg, rgba(56,189,248,0.12) 0%, transparent 100%); color: #38bdf8; font-weight: 600; }
+.sidebar-nav a.active::before { content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; background: linear-gradient(180deg, #38bdf8, #818cf8); border-radius: 0 3px 3px 0; }
 .sidebar-nav a svg { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.7; }
 .sidebar-nav a.active svg { opacity: 1; }
 .sidebar-footer { padding: 16px; border-top: 1px solid rgba(56,189,248,0.06); }
@@ -69,15 +76,16 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0e1a; col
 .page-header { background: rgba(15,23,42,0.8); backdrop-filter: blur(20px); padding: 20px 32px; border-bottom: 1px solid rgba(56,189,248,0.06); position: sticky; top: 0; z-index: 50; flex-shrink: 0; }
 .page-header h2 { font-size: 20px; color: #f1f5f9; }
 .page-header p { font-size: 13px; color: #64748b; margin-top: 2px; }
-.page-body { padding: 24px 32px; flex: 1; display: flex; flex-direction: column; }
+.page-body { padding: 24px 32px; flex: 1; display: flex; flex-direction: column; gap: 20px; }
 .page { display: none; }
-.page.active { display: flex; flex-direction: column; flex: 1; }
+.page.active { display: flex; flex-direction: column; flex: 1; animation: fadeIn 0.2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ---- Cards ---- */
-.card { background: rgba(30,41,59,0.5); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(56,189,248,0.06); padding: 24px; margin-bottom: 24px; transition: all 0.3s; }
+.card { background: rgba(30,41,59,0.5); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(56,189,248,0.06); padding: 24px; transition: all 0.3s; }
 .card:hover { border-color: rgba(56,189,248,0.12); }
 .card-title { font-size: 12px; color: #94a3b8; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; flex-shrink: 0; }
 .stat-card { background: rgba(30,41,59,0.5); backdrop-filter: blur(10px); border-radius: 14px; border: 1px solid rgba(56,189,248,0.06); padding: 20px; transition: all 0.3s; }
 .stat-card:hover { border-color: rgba(56,189,248,0.15); transform: translateY(-2px); }
 .stat-card .label { color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
@@ -127,15 +135,20 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8
 .user-row-item .detail { color: #64748b; font-size: 11px; margin-top: 2px; display: flex; gap: 16px; }
 
 /* ---- Analytics ---- */
-.analytics-toolbar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+#page-analytics .page-body { gap: 16px; }
+#analytics-chart-card { flex: 1; display: flex; flex-direction: column; margin-bottom: 0; min-height: 0; }
+#analytics-chart-card .card-title { flex-shrink: 0; }
+#analytics-chart-card .chart-container,
+#analytics-chart-card .chart-3d-container { flex: 1; min-height: 200px; }
+.analytics-toolbar { display: flex; gap: 12px; flex-shrink: 0; flex-wrap: wrap; align-items: center; min-height: 40px; }
 .analytics-toolbar .view-toggle { display: flex; gap: 4px; background: rgba(15,23,42,0.8); border-radius: 10px; padding: 4px; border: 1px solid rgba(51,65,85,0.3); }
 .analytics-toolbar .view-toggle button { padding: 8px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; background: transparent; color: #64748b; }
 .analytics-toolbar .view-toggle button.active { background: rgba(56,189,248,0.15); color: #38bdf8; }
 .analytics-toolbar .view-toggle button:hover:not(.active) { color: #94a3b8; }
-.chart-container { position: relative; width: 100%; min-height: 350px; }
-.chart-container canvas { width: 100% !important; height: 100% !important; }
-.chart-3d-container { width: 100%; height: 400px; position: relative; }
-.chart-3d-container canvas { display: block; }
+.chart-container { position: relative; width: 100%; flex: 1; display: flex; }
+.chart-container canvas { width: 100% !important; height: 100% !important; flex: 1; }
+.chart-3d-container { width: 100%; flex: 1; min-height: 200px; position: relative; display: flex; }
+.chart-3d-container canvas { display: block; flex: 1; }
 
 /* ---- Quick Start Grid ---- */
 .quick-start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -176,6 +189,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8
     <div id="g_id_signin" class="g_id_signin"></div>
   </div>
 </div>
+
+<div id="toast-container"></div>
 
 <!-- App -->
 <div id="app">
@@ -450,7 +465,7 @@ document.getElementById('loginForm').onsubmit = async (e) => {
       body: JSON.stringify({ username, password })
     });
     const data = await res.json();
-    if (res.ok) {
+      if (res.ok) {
       token = data.token; userType = data.user.type;
       localStorage.setItem('token', token);
       localStorage.setItem('user-email', data.user.username);
@@ -458,6 +473,7 @@ document.getElementById('loginForm').onsubmit = async (e) => {
       localStorage.setItem('user-type', userType);
       document.getElementById('loginPage').style.display = 'none';
       document.getElementById('app').style.display = 'flex';
+      toast('Welcome back, ' + data.user.username, 'success');
       initApp();
     } else {
       showMsg('login-msg', data.error || 'Login failed', 'error');
@@ -600,9 +616,9 @@ async function setupDatabase() {
   try {
     const res = await fetch(`${API_BASE}/setup`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
     const data = await res.json();
-    if (res.ok) { showMsg('db-msg', `"${data.database_name}" ready — ${data.schema.length} tables`, 'success'); loadData(); }
-    else { showMsg('db-msg', data.error, 'error'); }
-  } catch (_) { showMsg('db-msg', 'Connection error', 'error'); }
+    if (res.ok) { toast(`"${data.database_name}" ready — ${data.schema.length} tables`, 'success'); loadData(); }
+    else { toast(data.error, 'error'); }
+  } catch (_) { toast('Connection error', 'error'); }
   btn.disabled = false; btn.textContent = '⚡ Initialize My Database';
 }
 
@@ -615,17 +631,17 @@ async function createDatabase() {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ name })
     });
-    if (res.ok) { document.getElementById('new-db-name').value = ''; showMsg('db-msg', `"${name}" created`, 'success'); loadData(); }
-    else { showMsg('db-msg', (await res.json()).error, 'error'); }
-  } catch (_) { showMsg('db-msg', 'Connection error', 'error'); }
+    if (res.ok) { document.getElementById('new-db-name').value = ''; toast(`"${name}" created`, 'success'); loadData(); }
+    else { toast((await res.json()).error, 'error'); }
+  } catch (_) { toast('Connection error', 'error'); }
 }
 
 async function deleteDb(id) {
   if (!confirm('Delete this database? Cannot be undone.')) return;
   try {
     await fetch(`${API_BASE}/databases/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
-    showMsg('db-msg', 'Deleted', 'success'); loadData();
-  } catch (_) { showMsg('db-msg', 'Delete failed', 'error'); }
+    toast('Database deleted', 'success'); loadData();
+  } catch (_) { toast('Delete failed', 'error'); }
 }
 
 async function executeSQL() {
@@ -640,9 +656,9 @@ async function executeSQL() {
       body: JSON.stringify({ sql })
     });
     const data = await res.json();
-    if (res.ok) { showMsg('sql-msg', data.message, 'success'); document.getElementById('sql-results').innerHTML = `<div class="msg success">${data.message}</div>`; }
+    if (res.ok) { toast(data.message, 'success'); document.getElementById('sql-results').innerHTML = `<div class="msg success">${data.message}</div>`; }
     else { document.getElementById('sql-results').innerHTML = `<div class="msg error">${data.error}</div>`; }
-  } catch (_) { showMsg('sql-msg', 'Failed', 'error'); }
+  } catch (_) { toast('Query failed', 'error'); }
 }
 
 async function runQuery() {
@@ -717,19 +733,19 @@ async function createClientUser() {
     if (res.ok) {
       document.getElementById('new-client-username').value = '';
       document.getElementById('new-client-password').value = '';
-      showMsg('clients-msg', `"${username}" created`, 'success');
+      toast(`"${username}" created`, 'success');
       loadClients();
-    } else { showMsg('clients-msg', (await res.json()).error, 'error'); }
-  } catch (_) { showMsg('clients-msg', 'Connection error', 'error'); }
+    } else { toast((await res.json()).error, 'error'); }
+  } catch (_) { toast('Connection error', 'error'); }
 }
 
 async function deleteClient(username) {
   if (!confirm(`Delete "${username}" and all databases?`)) return;
   try {
     const res = await fetch(`${API_BASE}/users/${username}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
-    if (res.ok) { showMsg('clients-msg', 'Deleted', 'success'); loadClients(); loadData(); }
-    else { showMsg('clients-msg', 'Failed', 'error'); }
-  } catch (_) { showMsg('clients-msg', 'Error', 'error'); }
+    if (res.ok) { toast('Client deleted', 'success'); loadClients(); loadData(); }
+    else { toast('Delete failed', 'error'); }
+  } catch (_) { toast('Error deleting client', 'error'); }
 }
 
 // ---- Analytics ----
@@ -906,6 +922,15 @@ function copyText(el) {
     btn.textContent = 'Copied!';
     setTimeout(() => btn.textContent = 'Copy', 2000);
   });
+}
+
+function toast(msg, type) {
+  const c = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3500);
 }
 
 function showMsg(id, msg, type) {
