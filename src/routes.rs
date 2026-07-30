@@ -55,15 +55,13 @@ fn check_rate_limit(state: &AppState, headers: &HeaderMap) -> Result<(), StatusC
 async fn health_check(
     state: State<AppState>,
 ) -> Json<serde_json::Value> {
-    let data_dir_ok = std::path::Path::new(&state.user_store.file_path()).exists();
-    let user_count = state.user_store.list_users().len();
     Json(serde_json::json!({
         "status": "healthy",
         "version": env!("CARGO_PKG_VERSION"),
         "timestamp": Utc::now().to_rfc3339(),
         "data_dir": std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string()),
-        "users_file_exists": data_dir_ok,
-        "user_count": user_count
+        "auth_db_path": state.user_store.file_path(),
+        "user_count": state.user_store.list_users().len()
     }))
 }
 
