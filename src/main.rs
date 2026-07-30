@@ -1,3 +1,4 @@
+mod analytics;
 mod auth;
 mod config;
 mod db;
@@ -13,6 +14,7 @@ use tower_http::trace::TraceLayer;
 use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::analytics::QueryTracker;
 use crate::config::Config;
 use crate::db::DatabaseManager;
 use crate::users::UserStore;
@@ -45,10 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_store_arc = Arc::new(user_store);
 
     let rate_limiter = RateLimiter::new(config.max_queries_per_minute, 60);
+    let query_tracker = QueryTracker::new();
 
     let app = Router::new()
         .route("/dashboard", get(|| async { Redirect::permanent("/dashboard.html") }))
-        .nest("/v1", routes::api_routes(db_manager.clone(), (*user_store_arc).clone(), rate_limiter))
+        .nest("/v1", routes::api_routes(db_manager.clone(), (*user_store_arc).clone(), rate_limiter, query_tracker))
         .fallback_service(ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());

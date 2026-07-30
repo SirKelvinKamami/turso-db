@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::Utc;
 
+use crate::analytics::{QueryTracker, AnalyticsResponse, VolumePoint};
 use crate::auth::{create_token, verify_token, extract_token_from_header, generate_api_key, is_admin, Claims};
 use crate::config::Config;
 use crate::db::DatabaseManager;
@@ -18,10 +19,11 @@ pub struct AppState {
     pub db_manager: DatabaseManager,
     pub user_store: UserStore,
     pub rate_limiter: RateLimiter,
+    pub query_tracker: QueryTracker,
 }
 
-pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limiter: RateLimiter) -> Router {
-    let state = AppState { db_manager, user_store, rate_limiter };
+pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limiter: RateLimiter, query_tracker: QueryTracker) -> Router {
+    let state = AppState { db_manager, user_store, rate_limiter, query_tracker };
 
     Router::new()
         .route("/health", get(health_check))
@@ -37,6 +39,7 @@ pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limit
         .route("/databases/{id}/query", post(run_query))
         .route("/setup", post(setup_database))
         .route("/rate-limit", get(rate_limit_info))
+        .route("/analytics", get(analytics_handler))
         .with_state(state)
 }
 
@@ -166,6 +169,7 @@ async fn list_databases(
 ) -> Result<Json<Vec<DatabaseResponse>>, (StatusCode, Json<ErrorResponse>)> {
     let _ = check_rate_limit(&state, &headers);
     let claims = authenticate(&headers)?;
+    state.query_tracker.track_query(&claims.sub);
     let owner = if claims.typ == "admin" { None } else { Some(claims.sub.as_str()) };
     let databases = state.db_manager.list_databases(owner);
     Ok(Json(databases.into_iter().map(|(id, entry)| DatabaseResponse {
@@ -230,6 +234,7 @@ async fn execute_query(
 ) -> Result<Json<ExecuteResponse>, (StatusCode, Json<ErrorResponse>)> {
     let _ = check_rate_limit(&state, &headers);
     let claims = authenticate(&headers)?;
+    state.query_tracker.track_query(&claims.sub);
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     let result = state.db_manager.execute(&id, &payload.sql).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "EXECUTE_ERROR".into() })))?;
@@ -244,6 +249,7 @@ async fn run_query(
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     let _ = check_rate_limit(&state, &headers);
     let claims = authenticate(&headers)?;
+    state.query_tracker.track_query(&claims.sub);
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     let rows = state.db_manager.query(&id, &payload.sql).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "QUERY_ERROR".into() })))?;
@@ -330,6 +336,33 @@ fn check_db_owner(state: &AppState, db_id: &str, user: &str, user_type: &str) ->
         Some(_) => Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Not your database".into(), code: "FORBIDDEN".into() }))),
         None => Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Database not found".into(), code: "NOT_FOUND".into() }))),
     }
+}
+
+async fn analytics_handler(
+    state: State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AnalyticsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    let is_admin = claims.typ == "admin";
+
+    let (total_queries, database_count, user_count) = if is_admin {
+        let dbs = state.db_manager.list_databases(None);
+        let users = state.user_store.list_users();
+        (state.query_tracker.get_total_all(), dbs.len(), users.len())
+    } else {
+        let dbs = state.db_manager.list_databases(Some(&claims.sub));
+        (state.query_tracker.get_total(&claims.sub), dbs.len(), 0)
+    };
+
+    let volume_raw = if is_admin {
+        state.query_tracker.get_volume_all()
+    } else {
+        state.query_tracker.get_volume(&claims.sub)
+    };
+
+    let volume: Vec<VolumePoint> = volume_raw.into_iter().map(|(ts, count)| VolumePoint { timestamp: ts, count }).collect();
+
+    Ok(Json(AnalyticsResponse { total_queries, database_count, user_count, volume }))
 }
 
 #[derive(Debug, serde::Deserialize)]

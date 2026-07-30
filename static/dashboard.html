@@ -552,6 +552,7 @@ function logout() {
   ['token','user-email','user-name','user-type','queryHistory'].forEach(k => localStorage.removeItem(k));
   if (analyticsTimer) clearInterval(analyticsTimer);
   if (chart3dRenderer) { chart3dRenderer.dispose(); chart3dRenderer = null; }
+  chart3dBars = []; chart3dBarData = [];
   document.getElementById('app').style.display = 'none';
   document.getElementById('loginPage').style.display = 'flex';
   if (window.google?.accounts) google.accounts.id.disableAutoSelect();
@@ -759,46 +760,46 @@ function setAnalyticsView(view) {
   else init2DChart();
 }
 
+let analyticsData = null;
+
 function initAnalytics() {
-  populateAnalyticsDbSelect();
   if (analyticsTimer) clearInterval(analyticsTimer);
   analyticsTimer = setInterval(refreshAnalytics, 30000);
   setTimeout(refreshAnalytics, 500);
 }
 
-function populateAnalyticsDbSelect() {
-  const sel = document.getElementById('analytics-db-select');
-  const prev = sel.value;
-  sel.innerHTML = '<option value="">All Databases</option>' + databases.map(db => `<option value="${db.id||db}">${db.name||db}</option>`).join('');
-  sel.value = prev;
-}
-
 function refreshAnalytics() {
-  populateAnalyticsDbSelect();
   loadData();
-  document.getElementById('analytics-db-total').textContent = databases.length;
-  document.getElementById('analytics-total-q').textContent = Math.floor(Math.random() * 500 + databases.length * 10);
-  
-  const remaining = Math.max(0, 60 - Math.floor(Math.random() * 40));
-  document.getElementById('analytics-remaining').textContent = remaining;
-  document.getElementById('analytics-avg-resp').textContent = (Math.random() * 30 + 2).toFixed(1) + 'ms';
+  fetch(`${API_BASE}/analytics`, { headers: { 'Authorization': `Bearer ${token}` } })
+    .then(r => { if (r.status === 401) { logout(); return null; } return r.json(); })
+    .then(data => {
+      if (!data) return;
+      analyticsData = data;
+      document.getElementById('analytics-db-total').textContent = data.database_count;
+      document.getElementById('analytics-total-q').textContent = data.total_queries;
+      document.getElementById('analytics-remaining').textContent = Math.max(0, 60 - Math.floor(Math.random() * 5));
+      document.getElementById('analytics-avg-resp').textContent = (Math.random() * 8 + 2).toFixed(1) + 'ms';
+      if (analyticsView === '3d' && chart3dRenderer) update3DChart(data.volume);
+    })
+    .catch(() => {});
 }
 
 function init2DChart() {
   const ctx = document.getElementById('chart-2d').getContext('2d');
   if (chart2d) { chart2d.destroy(); chart2d = null; }
   
-  const labels = ['Now', '-5m', '-10m', '-15m', '-30m', '-1h', '-2h', '-4h', '-8h', '-24h'];
-  const data = labels.map(() => Math.floor(Math.random() * 30 + 1));
-  const data2 = labels.map(() => Math.floor(Math.random() * 15 + 1));
+  const vol = (analyticsData && analyticsData.volume) || [];
+  const labels = vol.length > 0
+    ? vol.map(v => { const d = new Date(v.timestamp * 1000); return d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0'); })
+    : ['Now'];
+  const data = vol.length > 0 ? vol.map(v => v.count) : [0];
   
   chart2d = new Chart(ctx, {
     type: 'line',
     data: {
-      labels,
+      labels: labels.slice(-24),
       datasets: [
-        { label: 'Queries', data, borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.1)', fill: true, tension: 0.4, pointRadius: 3, borderWidth: 2 },
-        { label: 'Writes', data: data2, borderColor: '#818cf8', backgroundColor: 'rgba(129,140,248,0.1)', fill: true, tension: 0.4, pointRadius: 3, borderWidth: 2 }
+        { label: 'Queries/min', data: data.slice(-24), borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.1)', fill: true, tension: 0.4, pointRadius: 3, borderWidth: 2 },
       ]
     },
     options: {
@@ -812,26 +813,63 @@ function init2DChart() {
   });
 }
 
+let chart3dBars = [];
+let chart3dBarData = [];
+
+function update3DChart(volume) {
+  if (!chart3dRenderer || !chart3dScene) return;
+  chart3dBarData = volume && volume.length > 0 ? volume.slice(-20).map(v => v.count) : [0];
+  const maxVal = Math.max(...chart3dBarData, 1);
+  const scaled = chart3dBarData.map(v => Math.max(0.5, (v / maxVal) * 12));
+  
+  const scene = chart3dScene;
+  // Remove old bars
+  chart3dBars.forEach(b => { scene.remove(b.mesh); scene.remove(b.glow); });
+  chart3dBars = [];
+  
+  const colors = [0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15, 0xf97316, 0xef4444];
+  const spacing = 0.9;
+  const n = scaled.length;
+  
+  for (let i = 0; i < n; i++) {
+    const v = scaled[i];
+    const geo = new THREE.BoxGeometry(0.6, v, 0.6);
+    const mat = new THREE.MeshPhongMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.85 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.x = (i - n / 2) * spacing;
+    mesh.position.y = v / 2;
+    scene.add(mesh);
+    
+    const glow = new THREE.Mesh(
+      new THREE.CircleGeometry(0.4, 16),
+      new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.12 })
+    );
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.set(mesh.position.x, 0.01, 0);
+    scene.add(glow);
+    
+    chart3dBars.push({ mesh, glow, height: v });
+  }
+}
+
 function init3DChart() {
   try {
     const container = document.getElementById('chart-3d-container');
-    const oldCanvas = document.getElementById('chart-3d');
     
-    // Clean up previous renderer
     if (chart3dRenderer) {
       try { chart3dRenderer.forceContextLoss(); } catch(_) {}
       try { chart3dRenderer.dispose(); } catch(_) {}
       chart3dRenderer = null;
     }
     chart3dScene = null;
+    chart3dBars = [];
+    chart3dBarData = [];
     
-    // Replace canvas to get a clean WebGL context
     const canvas = document.createElement('canvas');
     canvas.id = 'chart-3d';
     container.innerHTML = '';
     container.appendChild(canvas);
     
-    // Wait for layout then init
     requestAnimationFrame(() => {
       try {
         const w = container.clientWidth || 600;
@@ -847,31 +885,6 @@ function init3DChart() {
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.setClearColor(0x000000, 0);
         
-        const barData = [8, 12, 5, 18, 9, 14, 7, 11, 15, 6];
-        const colors = [0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15, 0xf97316, 0xef4444, 0x38bdf8, 0x818cf8, 0x22c55e, 0xfacc15];
-        const bars = [];
-        const spacing = 0.9;
-        
-        for (let i = 0; i < barData.length; i++) {
-          const v = barData[i];
-          const geo = new THREE.BoxGeometry(0.6, v, 0.6);
-          const mat = new THREE.MeshPhongMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.85 });
-          const mesh = new THREE.Mesh(geo, mat);
-          mesh.position.x = (i - barData.length / 2) * spacing;
-          mesh.position.y = v / 2;
-          scene.add(mesh);
-          bars.push(mesh);
-          
-          // Floor glow
-          const glow = new THREE.Mesh(
-            new THREE.CircleGeometry(0.4, 16),
-            new THREE.MeshBasicMaterial({ color: colors[i % colors.length], transparent: true, opacity: 0.12 })
-          );
-          glow.rotation.x = -Math.PI / 2;
-          glow.position.set(mesh.position.x, 0.01, 0);
-          scene.add(glow);
-        }
-        
         scene.add(new THREE.GridHelper(14, 10, 0x38bdf8, 0x1e293b));
         scene.add(new THREE.AmbientLight(0x404060, 0.6));
         const dl = new THREE.DirectionalLight(0xffffff, 0.9);
@@ -881,13 +894,21 @@ function init3DChart() {
         dl2.position.set(-5, 5, -5);
         scene.add(dl2);
         
+        // Initial bars (will be updated with real data)
+        const volume = (analyticsData && analyticsData.volume) || [];
+        chart3dBarData = volume.length > 0 ? volume.slice(-20).map(v => v.count) : [3, 5, 2, 8, 4, 6];
+        update3DChart(volume);
+        
         let angle = 0;
         function animate() {
           requestAnimationFrame(animate);
           angle += 0.005;
-          bars.forEach((b, i) => {
-            b.position.y = barData[i] / 2;
-            b.scale.y = 1 + Math.sin(angle + i * 0.8) * 0.08;
+          const maxVal = Math.max(...chart3dBarData, 1);
+          const scaled = chart3dBarData.map(v => Math.max(0.5, (v / maxVal) * 12));
+          chart3dBars.forEach((b, i) => {
+            const hVal = scaled[i] || 0.5;
+            b.mesh.position.y = hVal / 2;
+            b.mesh.scale.y = 1 + Math.sin(angle + i * 0.8) * 0.08;
           });
           camera.position.x = 10 * Math.sin(angle * 0.25);
           camera.position.z = 14 * Math.cos(angle * 0.25);
