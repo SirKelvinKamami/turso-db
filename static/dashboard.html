@@ -65,13 +65,13 @@ body { font-family: 'Inter', -apple-system, sans-serif; background: #0a0e1a; col
 .sidebar-footer .user-type { font-size: 10px; color: #22c55e; }
 .sidebar-footer .logout-btn { width: 100%; padding: 8px; background: transparent; border: 1px solid rgba(51,65,85,0.4); border-radius: 8px; color: #f87171; cursor: pointer; font-size: 12px; transition: all 0.2s; }
 .sidebar-footer .logout-btn:hover { background: rgba(248,113,113,0.1); }
-.main-content { margin-left: 250px; min-height: 100vh; }
-.page-header { background: rgba(15,23,42,0.8); backdrop-filter: blur(20px); padding: 20px 32px; border-bottom: 1px solid rgba(56,189,248,0.06); position: sticky; top: 0; z-index: 50; }
+.main-content { margin-left: 250px; min-height: 100vh; display: flex; flex-direction: column; }
+.page-header { background: rgba(15,23,42,0.8); backdrop-filter: blur(20px); padding: 20px 32px; border-bottom: 1px solid rgba(56,189,248,0.06); position: sticky; top: 0; z-index: 50; flex-shrink: 0; }
 .page-header h2 { font-size: 20px; color: #f1f5f9; }
 .page-header p { font-size: 13px; color: #64748b; margin-top: 2px; }
-.page-body { padding: 24px 32px; }
+.page-body { padding: 24px 32px; flex: 1; display: flex; flex-direction: column; }
 .page { display: none; }
-.page.active { display: block; }
+.page.active { display: flex; flex-direction: column; flex: 1; }
 
 /* ---- Cards ---- */
 .card { background: rgba(30,41,59,0.5); backdrop-filter: blur(10px); border-radius: 16px; border: 1px solid rgba(56,189,248,0.06); padding: 24px; margin-bottom: 24px; transition: all 0.3s; }
