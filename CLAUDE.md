@@ -11,7 +11,8 @@ This project is managed by Super AI. All AI sessions must follow these rules.
 1. Read `MEMORY/README.md` — project overview
 2. Read `MEMORY/projects/turso-db/` — current status
 3. Check `MEMORY/patterns/` — shared best practices
-4. Check `super-ai/ALERTS.md` — any issues
+4. Read `C:\Users\sirke\OneDrive\Documents\Alufacade World ERP System\super-ai\SESSION_PROTOCOL.md`
+5. Check `C:\Users\sirke\OneDrive\Documents\Alufacade World ERP System\super-ai\ALERTS.md` — any issues
 
 ---
 
@@ -20,6 +21,7 @@ This project is managed by Super AI. All AI sessions must follow these rules.
 1. Update `MEMORY/projects/turso-db/SESSION_LOG.md`
 2. Add lessons to `MEMORY/lessons/`
 3. Update `super-ai/PROJECTS.md` if status changed
+4. Record tests, files changed, and unresolved issues in the session log
 
 ---
 
