@@ -1,3 +1,4 @@
+autoDeploy: true
 services:
   - type: web
     name: turso-db
