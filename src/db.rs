@@ -65,7 +65,8 @@ impl DatabaseManager {
             if !file_name.ends_with(".db") || file_name == "auth.db" || file_name == "users.json" { continue; }
             let id = file_name.trim_end_matches(".db").to_string();
             if known.contains(&id) { continue; }
-            match Builder::new_local(path.to_string_lossy().into_owned()).build().await {
+            let db_path = path.to_string_lossy().into_owned();
+            match Builder::new_local(&db_path).build().await {
                 Ok(db) => {
                     self.databases.insert(id.clone(), (db, DatabaseEntry { owner: "admin".to_string(), name: format!("recovered-{}", &id), created_at: chrono::Utc::now().to_rfc3339() }));
                     tracing::warn!("Recovered orphan database file {} as owner admin", id);
