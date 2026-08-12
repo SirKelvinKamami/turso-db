@@ -6,6 +6,7 @@ mod models;
 mod plans;
 mod ratelimit;
 mod routes;
+mod supabase;
 mod users;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::analytics::QueryTracker;
 use crate::config::Config;
 use crate::db::DatabaseManager;
+use crate::supabase::Supabase;
 use crate::users::UserStore;
 use crate::ratelimit::RateLimiter;
 
@@ -34,12 +36,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting Turso Service v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Data directory: {}", config.data_dir);
 
-    let db_manager = DatabaseManager::new(&config.data_dir).await?;
+    let supabase = Supabase::from_env();
+    if supabase.is_some() {
+        tracing::info!("Supabase persistence enabled");
+    } else {
+        tracing::warn!("SUPABASE_URL/SUPABASE_SERVICE_KEY not set - using ephemeral storage");
+    }
 
-    let user_store = UserStore::new(&config.data_dir)?;
+    let db_manager = DatabaseManager::new(&config.data_dir, supabase.clone()).await?;
+
+    let user_store = UserStore::new(supabase);
 
     for (username, password) in &config.seed_users {
-        match user_store.create_user(username, password) {
+        match user_store.create_user(username, password).await {
             Ok(u) => tracing::info!("Seeded user: {}", u.username),
             Err(e) => tracing::warn!("Seed user {}: {}", username, e),
         }

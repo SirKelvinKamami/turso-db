@@ -5,6 +5,8 @@ use std::sync::Arc;
 use turso::Builder;
 use uuid::Uuid;
 
+use crate::supabase::Supabase;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestEntry {
     pub id: String,
@@ -25,17 +27,23 @@ pub struct DatabaseManager {
     data_dir: String,
     manifest_path: String,
     databases: Arc<DashMap<String, (turso::Database, DatabaseEntry)>>,
+    supabase: Option<Supabase>,
 }
 
 impl DatabaseManager {
-    pub async fn new(data_dir: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(data_dir: &str, supabase: Option<Supabase>) -> Result<Self, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(data_dir)?;
         let manager = Self {
             data_dir: data_dir.to_string(),
             manifest_path: format!("{}/databases.json", data_dir),
             databases: Arc::new(DashMap::new()),
+            supabase,
         };
-        manager.load_manifest().await?;
+        if manager.supabase.is_some() {
+            manager.load_from_supabase().await?;
+        } else {
+            manager.load_manifest().await?;
+        }
         Ok(manager)
     }
 
@@ -79,6 +87,52 @@ impl DatabaseManager {
         Ok(())
     }
 
+    async fn load_from_supabase(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let sb = self.supabase.as_ref().unwrap();
+        let rows = sb.rows("turso_databases", "").await?;
+        let mut ids: Vec<String> = Vec::new();
+        for row in rows {
+            let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let owner = row.get("owner").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let created_at = row.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if id.is_empty() { continue; }
+            ids.push(id.clone());
+            let path = format!("{}/{}.db", self.data_dir, id);
+            if !Path::new(&path).exists() {
+                match sb.download_db(&owner, &id).await {
+                    Ok(bytes) => {
+                        tokio::fs::write(&path, bytes).await?;
+                        tracing::info!("Restored database {} ({}) from storage", name, id);
+                    }
+                    Err(_) => {
+                        tracing::warn!("No stored backup for {}, creating empty", name);
+                        Builder::new_local(&path).build().await?;
+                    }
+                }
+            }
+            match Builder::new_local(&path).build().await {
+                Ok(db) => {
+                    self.databases.insert(id.clone(), (db, DatabaseEntry { owner, name, created_at }));
+                    tracing::info!("Loaded database from registry: {}", id);
+                }
+                Err(e) => tracing::warn!("Failed to open database {}: {}", id, e),
+            }
+        }
+
+        for dir_entry in std::fs::read_dir(&self.data_dir)? {
+            let path = dir_entry?.path();
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()).map(|n| n.to_string()) else { continue; };
+            if !file_name.ends_with(".db") || file_name == "auth.db" { continue; }
+            let id = file_name.trim_end_matches(".db").to_string();
+            if !ids.contains(&id) {
+                let _ = std::fs::remove_file(&path);
+                tracing::warn!("Removed orphan database file not in registry: {}", id);
+            }
+        }
+        Ok(())
+    }
+
     fn save_manifest(&self) -> Result<(), Box<dyn std::error::Error>> {
         let entries: Vec<ManifestEntry> = self.databases.iter().map(|entry| {
             let id = entry.key().clone();
@@ -100,7 +154,18 @@ impl DatabaseManager {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         self.databases.insert(id.clone(), (db, entry.clone()));
-        self.save_manifest()?;
+        if let Some(sb) = &self.supabase {
+            let _ = sb.insert("turso_databases", serde_json::json!({
+                "id": id,
+                "name": entry.name,
+                "owner": entry.owner,
+                "created_at": entry.created_at,
+            })).await;
+            let bytes = tokio::fs::read(&path).await?;
+            let _ = sb.upload_db(&entry.owner, &id, bytes).await;
+        } else {
+            self.save_manifest()?;
+        }
         tracing::info!("Created database: {} (owner: {}) at {}", name, owner, path);
         Ok((id, entry))
     }
@@ -112,15 +177,29 @@ impl DatabaseManager {
             .ok_or_else(|| format!("Database {} not found", id).into())
     }
 
+    async fn persist_db(&self, db_id: &str, owner: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(sb) = &self.supabase else { return Ok(()) };
+        let path = format!("{}/{}.db", self.data_dir, db_id);
+        if let Some((db, _)) = self.databases.get(db_id) {
+            if let Ok(conn) = db.connect() {
+                let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", ()).await;
+            }
+        }
+        let bytes = tokio::fs::read(&path).await?;
+        sb.upload_db(owner, db_id, bytes).await?;
+        Ok(())
+    }
+
     pub async fn execute(&self, db_id: &str, sql: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let (db, _) = self.get_database(db_id).await?;
+        let (db, entry) = self.get_database(db_id).await?;
         let conn = db.connect()?;
         let result = conn.execute(sql, ()).await?;
+        let _ = self.persist_db(db_id, &entry.owner).await;
         Ok(format!("{} rows affected", result))
     }
 
     pub async fn query(&self, db_id: &str, sql: &str) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
-        let (db, _) = self.get_database(db_id).await?;
+        let (db, entry) = self.get_database(db_id).await?;
         let conn = db.connect()?;
         let mut rows = conn.query(sql, ()).await?;
         let mut results = Vec::new();
@@ -143,16 +222,25 @@ impl DatabaseManager {
             }
             results.push(row_data);
         }
+        let _ = self.persist_db(db_id, &entry.owner).await;
         Ok(results)
     }
 
     pub async fn delete_database(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let owner = self.databases.get(id).map(|e| e.value().1.owner.clone());
         self.databases.remove(id);
         let path = format!("{}/{}.db", self.data_dir, id);
         if Path::new(&path).exists() {
             std::fs::remove_file(path)?;
         }
-        self.save_manifest()?;
+        if let Some(sb) = &self.supabase {
+            let _ = sb.delete("turso_databases", &format!("id=eq.{}", id)).await;
+            if let Some(owner) = owner {
+                let _ = sb.delete_db(&owner, id).await;
+            }
+        } else {
+            self.save_manifest()?;
+        }
         tracing::info!("Deleted database: {}", id);
         Ok(())
     }

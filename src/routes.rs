@@ -57,16 +57,16 @@ fn check_rate_limit(state: &AppState, headers: &HeaderMap) -> Result<(), StatusC
     Ok(())
 }
 
-fn plan_for(state: &AppState, username: &str, user_type: &str) -> Plan {
+async fn plan_for(state: &AppState, username: &str, user_type: &str) -> Plan {
     if user_type == "admin" {
         Plan::Enterprise
     } else {
-        state.user_store.get_user(username).map(|u| Plan::from_str(&u.plan)).unwrap_or(Plan::Free)
+        state.user_store.get_user(username).await.map(|u| Plan::from_str(&u.plan)).unwrap_or(Plan::Free)
     }
 }
 
-fn check_user_rate_limit(state: &AppState, username: &str, user_type: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    let plan = plan_for(state, username, user_type);
+async fn check_user_rate_limit(state: &AppState, username: &str, user_type: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let plan = plan_for(state, username, user_type).await;
     state.rate_limiter.check_with_limit(username, plan.max_queries_per_minute())
         .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, Json(ErrorResponse { error: "Query rate limit exceeded for your plan".into(), code: "RATE_LIMIT".into() })))?;
     Ok(())
@@ -81,7 +81,7 @@ async fn health_check(
         "timestamp": Utc::now().to_rfc3339(),
         "data_dir": std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string()),
         "auth_db_path": state.user_store.file_path(),
-        "user_count": state.user_store.list_users().len()
+        "user_count": state.user_store.list_users().await.len()
     }))
 }
 
@@ -103,7 +103,7 @@ async fn login(
         return Ok(Json(serde_json::json!({"token": token, "user": {"username": payload.username, "type": "admin", "plan": Plan::Enterprise.as_str()}})));
     }
 
-    if let Ok(user) = state.user_store.verify_password(&payload.username, &payload.password) {
+    if let Ok(user) = state.user_store.verify_password(&payload.username, &payload.password).await {
         let token = create_token(&user.username, "user", &config.jwt_secret, config.jwt_expiry_hours)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
         return Ok(Json(serde_json::json!({"token": token, "user": {"username": user.username, "id": user.id, "type": "user", "plan": user.plan}})));
@@ -127,7 +127,7 @@ async fn signup(
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<UserInfo>, (StatusCode, Json<ErrorResponse>)> {
     authenticate_admin(&headers)?;
-    let user = state.user_store.create_user(&payload.username, &payload.password)
+    let user = state.user_store.create_user(&payload.username, &payload.password).await
         .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
     tracing::info!("Created user: {}", user.username);
     Ok(Json(UserInfo { id: user.id, username: user.username, plan: user.plan, created_at: user.created_at }))
@@ -141,7 +141,7 @@ async fn list_users(
     if claims.typ != "admin" {
         return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin only".into(), code: "FORBIDDEN".into() })));
     }
-    let mut result: Vec<ClientUserInfo> = state.user_store.list_users().iter().map(|u| {
+    let mut result: Vec<ClientUserInfo> = state.user_store.list_users().await.iter().map(|u| {
         let db_count = state.db_manager.list_databases(Some(&u.username)).len();
         ClientUserInfo { id: u.id.clone(), username: u.username.clone(), plan: u.plan.clone(), created_at: u.created_at.clone(), database_count: db_count }
     }).collect();
@@ -154,7 +154,7 @@ async fn current_user(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
-    let plan = plan_for(&state, &claims.sub, &claims.typ);
+    let plan = plan_for(&state, &claims.sub, &claims.typ).await;
     let db_count = if claims.typ == "admin" {
         state.db_manager.list_databases(None).len()
     } else {
@@ -178,7 +178,7 @@ async fn delete_user(
     if is_admin(&username) {
         return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Cannot delete admin".into(), code: "USER_ERROR".into() })));
     }
-    state.user_store.delete_user(&username)
+    state.user_store.delete_user(&username).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
     let dbs = state.db_manager.list_databases(Some(&username));
     for (id, _) in dbs {
@@ -198,7 +198,7 @@ async fn set_user_plan(
         return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Cannot change admin plan".into(), code: "USER_ERROR".into() })));
     }
     let plan = Plan::from_str(&payload.plan);
-    let user = state.user_store.set_plan(&username, plan.as_str())
+    let user = state.user_store.set_plan(&username, plan.as_str()).await
         .map_err(|e| (StatusCode::NOT_FOUND, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
     tracing::info!("Set plan {} for user {}", plan.as_str(), username);
     Ok(Json(serde_json::json!({"username": user.username, "plan": user.plan})))
@@ -210,7 +210,7 @@ async fn list_databases(
 ) -> Result<Json<Vec<DatabaseResponse>>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     state.query_tracker.track_query(&claims.sub);
-    check_user_rate_limit(&state, &claims.sub, &claims.typ)?;
+    check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     let owner = if claims.typ == "admin" { None } else { Some(claims.sub.as_str()) };
     let databases = state.db_manager.list_databases(owner);
     Ok(Json(databases.into_iter().map(|(id, entry)| DatabaseResponse {
@@ -225,7 +225,7 @@ async fn create_database(
 ) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
     let _ = check_rate_limit(&state, &headers);
     let claims = authenticate(&headers)?;
-    check_user_rate_limit(&state, &claims.sub, &claims.typ)?;
+    check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     let owner = &claims.sub;
 
     let plan = plan_for(&state, owner, &claims.typ);
@@ -276,7 +276,7 @@ async fn execute_query(
 ) -> Result<Json<ExecuteResponse>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     state.query_tracker.track_query(&claims.sub);
-    check_user_rate_limit(&state, &claims.sub, &claims.typ)?;
+    check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     let result = state.db_manager.execute(&id, &payload.sql).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "EXECUTE_ERROR".into() })))?;
@@ -291,7 +291,7 @@ async fn run_query(
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     state.query_tracker.track_query(&claims.sub);
-    check_user_rate_limit(&state, &claims.sub, &claims.typ)?;
+    check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     let rows = state.db_manager.query(&id, &payload.sql).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "QUERY_ERROR".into() })))?;

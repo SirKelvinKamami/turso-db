@@ -22,6 +22,10 @@ services:
         value: "turso_service=info"
       - key: SEED_USERS
         value: "das-creatives:nw2a.-QVN-85L||8"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
     disk:
       mountPath: /data
       sizeGB: 1
