@@ -180,8 +180,8 @@ impl DatabaseManager {
     async fn persist_db(&self, db_id: &str, owner: &str) -> Result<(), Box<dyn std::error::Error>> {
         let Some(sb) = &self.supabase else { return Ok(()) };
         let path = format!("{}/{}.db", self.data_dir, db_id);
-        if let Some((db, _)) = self.databases.get(db_id) {
-            if let Ok(conn) = db.connect() {
+        if let Some(entry) = self.databases.get(db_id) {
+            if let Ok(conn) = entry.value().0.connect() {
                 let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", ()).await;
             }
         }
