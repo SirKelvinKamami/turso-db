@@ -228,7 +228,7 @@ async fn create_database(
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     let owner = &claims.sub;
 
-    let plan = plan_for(&state, owner, &claims.typ);
+    let plan = plan_for(&state, owner, &claims.typ).await;
     let user_db_count = state.db_manager.list_databases(Some(owner)).len();
     let max_for_user = plan.max_databases();
     if user_db_count >= max_for_user {
@@ -389,7 +389,7 @@ async fn analytics_handler(
 
     let (total_queries, database_count, user_count) = if is_admin {
         let dbs = state.db_manager.list_databases(None);
-        let users = state.user_store.list_users();
+        let users = state.user_store.list_users().await;
         (state.query_tracker.get_total_all(), dbs.len(), users.len())
     } else {
         let dbs = state.db_manager.list_databases(Some(&claims.sub));
