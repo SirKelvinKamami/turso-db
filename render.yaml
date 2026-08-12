@@ -22,6 +22,10 @@ services:
         value: "turso_service=info"
       - key: SEED_USERS
         value: "das-creatives:REDACTED"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
     disk:
       mountPath: /data
       sizeGB: 1
