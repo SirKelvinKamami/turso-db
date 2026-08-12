@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod db;
 mod models;
+mod plans;
 mod ratelimit;
 mod routes;
 mod users;

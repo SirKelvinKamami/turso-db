@@ -107,10 +107,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8
 .db-item .name { font-weight: 600; font-size: 14px; }
 .db-item .meta { color: #64748b; font-size: 11px; margin-top: 2px; display: flex; gap: 16px; }
 .db-item .actions { display: flex; gap: 6px; }
-.badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: capitalize; }
 .badge-blue { background: rgba(56,189,248,0.12); color: #38bdf8; }
 .badge-green { background: rgba(34,197,94,0.12); color: #4ade80; }
 .badge-yellow { background: rgba(234,179,8,0.12); color: #facc15; }
+.plan-select { width: auto; min-width: 110px; padding: 6px 10px; font-size: 12px; background: rgba(15,23,42,0.8); border: 1px solid rgba(51,65,85,0.4); border-radius: 8px; color: #e2e8f0; cursor: pointer; }
 
 /* ---- Results ---- */
 .results-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
@@ -237,7 +238,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8
         <div>
           <div class="user-name" id="sidebarName">Admin</div>
           <div class="user-email" id="sidebarEmail">admin@turso</div>
-          <div class="user-type" id="sidebarUserType">admin</div>
+          <div class="user-type"><span id="sidebarUserType">admin</span> &middot; <span id="sidebarPlan">Free</span></div>
         </div>
       </div>
       <button class="logout-btn" onclick="logout()">Sign Out</button>
@@ -398,6 +399,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8
           <div class="settings-row"><span class="label">Name</span><span class="value" id="set-name">Admin</span></div>
           <div class="settings-row"><span class="label">Email / Username</span><span class="value" id="set-email">admin@turso.io</span></div>
           <div class="settings-row"><span class="label">Account Type</span><span class="value" id="set-auth">Admin</span></div>
+          <div class="settings-row"><span class="label">Plan</span><span class="value" id="set-plan">Free</span></div>
+          <div class="settings-row"><span class="label">Databases</span><span class="value" id="set-db-usage">-</span></div>
           <div class="settings-row"><span class="label">API Token</span><span class="value" id="set-token" style="font-size:11px;word-break:break-all">-</span></div>
         </div>
         <div class="card">
@@ -467,10 +470,12 @@ document.getElementById('loginForm').onsubmit = async (e) => {
     const data = await res.json();
       if (res.ok) {
       token = data.token; userType = data.user.type;
+      const plan = data.user.plan || 'free';
       localStorage.setItem('token', token);
       localStorage.setItem('user-email', data.user.username);
       localStorage.setItem('user-name', data.user.username);
       localStorage.setItem('user-type', userType);
+      localStorage.setItem('user-plan', plan);
       document.getElementById('loginPage').style.display = 'none';
       document.getElementById('app').style.display = 'flex';
       toast('Welcome back, ' + data.user.username, 'success');
@@ -496,6 +501,7 @@ function handleGoogleSignIn(response) {
       localStorage.setItem('user-email', payload.email);
       localStorage.setItem('user-name', payload.name);
       localStorage.setItem('user-type', 'user');
+      localStorage.setItem('user-plan', 'free');
       document.getElementById('loginPage').style.display = 'none';
       document.getElementById('app').style.display = 'flex';
       initApp();
@@ -511,6 +517,7 @@ function initApp() {
   document.getElementById('sidebarName').textContent = name;
   document.getElementById('sidebarAvatar').textContent = name.charAt(0).toUpperCase();
   document.getElementById('sidebarUserType').textContent = userType === 'admin' ? 'Administrator' : 'Client User';
+  document.getElementById('sidebarPlan').textContent = (localStorage.getItem('user-plan') || 'free').charAt(0).toUpperCase() + (localStorage.getItem('user-plan') || 'free').slice(1);
   document.getElementById('set-name').textContent = name;
   document.getElementById('set-email').textContent = email;
   document.getElementById('set-auth').textContent = userType === 'admin' ? 'Admin Login' : 'Client User';
@@ -522,8 +529,22 @@ function initApp() {
   }
   document.querySelectorAll('.admin-only').forEach(el => el.style.display = userType === 'admin' ? '' : 'none');
   loadRateLimit();
+  loadMe();
   loadData();
   initAnalytics();
+}
+
+async function loadMe() {
+  try {
+    const res = await fetch(`${API_BASE}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } });
+    if (res.status === 401) { logout(); return; }
+    const me = await res.json();
+    localStorage.setItem('user-plan', me.plan || 'free');
+    const planLabel = me.plan ? me.plan.charAt(0).toUpperCase() + me.plan.slice(1) : 'Free';
+    document.getElementById('sidebarPlan').textContent = planLabel;
+    document.getElementById('set-plan').textContent = planLabel;
+    document.getElementById('set-db-usage').textContent = `${me.database_count} / ${me.max_databases}`;
+  } catch (_) {}
 }
 
 let analyticsInitialized = false;
@@ -579,7 +600,7 @@ async function loadData() {
 
 function renderOverview() {
   document.getElementById('ov-db-count').textContent = databases.length;
-  const maxDbs = userType === 'admin' ? 100 : 20;
+  const maxDbs = userType === 'admin' ? 1000 : (localStorage.getItem('user-plan') === 'pro' ? 200 : localStorage.getItem('user-plan') === 'starter' ? 50 : 20);
   document.getElementById('ov-db-usage').textContent = `${databases.length} / ${maxDbs} databases`;
   const list = document.getElementById('ov-db-list');
   if (databases.length === 0) {
@@ -716,7 +737,7 @@ async function loadClients() {
     const users = await res.json();
     if (users.length === 0) { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>No client users</p></div>'; return; }
     document.getElementById('clients-list').innerHTML = users.map(u =>
-      `<div class="user-row-item"><div class="info"><div class="username">${u.username}</div><div class="detail"><span>ID: ${u.id.substring(0,12)}</span><span>Dbs: ${u.database_count||0}</span><span>${new Date(u.created_at).toLocaleDateString()}</span></div></div><button class="btn btn-danger btn-sm" onclick="deleteClient('${u.username}')">Delete</button></div>`
+      `<div class="user-row-item"><div class="info"><div class="username">${u.username} <span class="badge ${u.plan==='enterprise'?'badge-yellow':u.plan==='pro'?'badge-blue':u.plan==='starter'?'badge-green':'badge-blue'}" style="margin-left:6px">${u.plan}</span></div><div class="detail"><span>ID: ${u.id.substring(0,12)}</span><span>Dbs: ${u.database_count||0}</span><span>${new Date(u.created_at).toLocaleDateString()}</span></div></div><div style="display:flex;gap:8px;align-items:center"><select class="plan-select" onchange="setUserPlan('${u.username}', this.value)"><option value="free" ${u.plan==='free'?'selected':''}>Free</option><option value="starter" ${u.plan==='starter'?'selected':''}>Starter</option><option value="pro" ${u.plan==='pro'?'selected':''}>Pro</option><option value="enterprise" ${u.plan==='enterprise'?'selected':''}>Enterprise</option></select><button class="btn btn-danger btn-sm" onclick="deleteClient('${u.username}')">Delete</button></div></div>`
     ).join('');
   } catch (_) { document.getElementById('clients-list').innerHTML = '<div class="empty-state"><p>Error</p></div>'; }
 }
@@ -738,6 +759,18 @@ async function createClientUser() {
       loadClients();
     } else { toast((await res.json()).error, 'error'); }
   } catch (_) { toast('Connection error', 'error'); }
+}
+
+async function setUserPlan(username, plan) {
+  try {
+    const res = await fetch(`${API_BASE}/users/${username}/plan`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ plan })
+    });
+    if (res.ok) { toast(`${username} upgraded to ${plan}`, 'success'); loadClients(); }
+    else { toast((await res.json()).error, 'error'); loadClients(); }
+  } catch (_) { toast('Connection error', 'error'); loadClients(); }
 }
 
 async function deleteClient(username) {

@@ -66,6 +66,7 @@ pub struct CreateUserRequest {
 pub struct UserInfo {
     pub id: String,
     pub username: String,
+    pub plan: String,
     pub created_at: String,
 }
 
@@ -73,8 +74,14 @@ pub struct UserInfo {
 pub struct ClientUserInfo {
     pub id: String,
     pub username: String,
+    pub plan: String,
     pub created_at: String,
     pub database_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PlanUpdateRequest {
+    pub plan: String,
 }
 
 #[derive(Debug, Serialize)]
