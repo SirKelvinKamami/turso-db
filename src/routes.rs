@@ -65,10 +65,10 @@ fn plan_for(state: &AppState, username: &str, user_type: &str) -> Plan {
     }
 }
 
-fn check_user_rate_limit(state: &AppState, username: &str, user_type: &str) -> Result<(), StatusCode> {
+fn check_user_rate_limit(state: &AppState, username: &str, user_type: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let plan = plan_for(state, username, user_type);
     state.rate_limiter.check_with_limit(username, plan.max_queries_per_minute())
-        .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, Json(ErrorResponse { error: "Query rate limit exceeded for your plan".into(), code: "RATE_LIMIT".into() })))?;
     Ok(())
 }
 
