@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db_manager = DatabaseManager::new(&config.data_dir, supabase.clone()).await?;
 
-    let user_store = UserStore::new(supabase);
+    let user_store = UserStore::new(supabase.clone());
 
     for (username, password) in &config.seed_users {
         match user_store.create_user(username, password).await {
