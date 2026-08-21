@@ -337,6 +337,21 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: #38bdf8
           <div class="stat-card"><div class="label">Databases</div><div class="value" id="analytics-db-total">0</div><div class="sub">Active</div></div>
           <div class="stat-card"><div class="label">Rate Limit</div><div class="value" id="analytics-remaining">60</div><div class="sub">Remaining this minute</div></div>
         </div>
+        <div class="card admin-only" id="per-user-card">
+          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>Queries by Client</span>
+            <span id="per-user-filter-label" style="font-size:12px;color:#64748b;display:none">
+              Filtered: <b id="per-user-filter-name" style="color:#38bdf8"></b>
+              <button onclick="clearAnalyticsUserFilter()" style="margin-left:8px;padding:4px 10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.3);border-radius:6px;color:#38bdf8;font-size:11px;cursor:pointer">Show all</button>
+            </span>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr id="per-user-head" style="color:#64748b;text-align:left;border-bottom:1px solid rgba(51,65,85,0.4)">
+              <th style="padding:8px 6px">Client</th><th style="padding:8px 6px">Total Queries</th><th style="padding:8px 6px"></th>
+            </tr></thead>
+            <tbody id="per-user-body"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -794,6 +809,67 @@ function setAnalyticsView(view) {
 }
 
 let analyticsData = null;
+let analyticsUserFilter = null;
+
+function volumeLabel(ts, spanMs) {
+  const d = new Date(ts * 1000);
+  const hm = d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+  if (spanMs > 24 * 3600 * 1000) return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+  return hm;
+}
+
+function volumeSeries(vol) {
+  const shown = vol.slice(-72);
+  if (shown.length === 0) return { labels: ['Now'], counts: [0] };
+  const spanMs = (shown[shown.length - 1].timestamp - shown[0].timestamp) * 1000;
+  return { labels: shown.map(v => volumeLabel(v.timestamp, spanMs)), counts: shown.map(v => v.count) };
+}
+
+function setAnalyticsUserFilter(user) {
+  analyticsUserFilter = user;
+  document.getElementById('per-user-filter-label').style.display = '';
+  document.getElementById('per-user-filter-name').textContent = user;
+  refreshAnalytics();
+}
+
+function clearAnalyticsUserFilter() {
+  analyticsUserFilter = null;
+  document.getElementById('per-user-filter-label').style.display = 'none';
+  refreshAnalytics();
+}
+
+function renderPerUserTable(entries) {
+  const body = document.getElementById('per-user-body');
+  if (!body) return;
+  body.innerHTML = '';
+  if (!entries.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 3;
+    td.style.cssText = 'padding:10px 6px;color:#475569';
+    td.textContent = 'No query activity recorded yet';
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+  entries.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid rgba(51,65,85,0.25)';
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => setAnalyticsUserFilter(e.username);
+    const tdUser = document.createElement('td');
+    tdUser.style.cssText = 'padding:9px 6px;color:#e2e8f0';
+    tdUser.textContent = e.username;
+    const tdTotal = document.createElement('td');
+    tdTotal.style.cssText = 'padding:9px 6px;color:#38bdf8;font-weight:600';
+    tdTotal.textContent = e.total_queries;
+    const tdAction = document.createElement('td');
+    tdAction.style.cssText = 'padding:9px 6px;color:#64748b;font-size:12px';
+    tdAction.textContent = 'view chart →';
+    tr.append(tdUser, tdTotal, tdAction);
+    body.appendChild(tr);
+  });
+}
 
 function initAnalytics() {
   if (analyticsTimer) clearInterval(analyticsTimer);
@@ -803,7 +879,9 @@ function initAnalytics() {
 
 function refreshAnalytics() {
   loadData();
-  fetch(`${API_BASE}/analytics`, { headers: { 'Authorization': `Bearer ${token}` } })
+  let url = `${API_BASE}/analytics`;
+  if (userType === 'admin' && analyticsUserFilter) url += `?user=${encodeURIComponent(analyticsUserFilter)}`;
+  fetch(url, { headers: { 'Authorization': `Bearer ${token}` } })
     .then(r => { if (r.status === 401) { logout(); return null; } return r.json(); })
     .then(data => {
       if (!data) return;
@@ -812,7 +890,13 @@ function refreshAnalytics() {
       document.getElementById('analytics-total-q').textContent = data.total_queries;
       document.getElementById('analytics-remaining').textContent = Math.max(0, 60 - Math.floor(Math.random() * 5));
       document.getElementById('analytics-avg-resp').textContent = (Math.random() * 8 + 2).toFixed(1) + 'ms';
-      if (analyticsView === '3d' && chart3dRenderer) update3DChart(data.volume);
+      renderPerUserTable(data.per_user || []);
+      if (analyticsView === '2d' && chart2d) {
+        const s = volumeSeries(data.volume || []);
+        chart2d.data.labels = s.labels;
+        chart2d.data.datasets[0].data = s.counts;
+        chart2d.update('none');
+      } else if (analyticsView === '3d' && chart3dRenderer) update3DChart(data.volume);
     })
     .catch(() => {});
 }
@@ -820,19 +904,15 @@ function refreshAnalytics() {
 function init2DChart() {
   const ctx = document.getElementById('chart-2d').getContext('2d');
   if (chart2d) { chart2d.destroy(); chart2d = null; }
-  
-  const vol = (analyticsData && analyticsData.volume) || [];
-  const labels = vol.length > 0
-    ? vol.map(v => { const d = new Date(v.timestamp * 1000); return d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0'); })
-    : ['Now'];
-  const data = vol.length > 0 ? vol.map(v => v.count) : [0];
-  
+
+  const s = volumeSeries((analyticsData && analyticsData.volume) || []);
+
   chart2d = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: labels.slice(-24),
+      labels: s.labels,
       datasets: [
-        { label: 'Queries/min', data: data.slice(-24), borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.1)', fill: true, tension: 0.4, pointRadius: 3, borderWidth: 2 },
+        { label: 'Queries/min', data: s.counts, borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,0.1)', fill: true, tension: 0.4, pointRadius: 3, borderWidth: 2 },
       ]
     },
     options: {

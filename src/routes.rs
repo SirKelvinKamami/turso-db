@@ -1,12 +1,13 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post, put, delete},
     Json, Router,
 };
 use chrono::Utc;
+use std::collections::HashMap;
 
-use crate::analytics::{QueryTracker, AnalyticsResponse, VolumePoint};
+use crate::analytics::{QueryTracker, AnalyticsResponse, UserTotalsEntry, VolumePoint};
 use crate::auth::{create_token, verify_token, extract_token_from_header, generate_api_key, is_admin, Claims};
 use crate::config::Config;
 use crate::db::DatabaseManager;
@@ -383,11 +384,16 @@ fn check_db_owner(state: &AppState, db_id: &str, user: &str, user_type: &str) ->
 async fn analytics_handler(
     state: State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<AnalyticsResponse>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     let is_admin = claims.typ == "admin";
+    let filter_user: Option<&str> = if is_admin { params.get("user").map(|s| s.as_str()) } else { None };
 
-    let (total_queries, database_count, user_count) = if is_admin {
+    let (total_queries, database_count, user_count) = if let Some(user) = filter_user {
+        let dbs = state.db_manager.list_databases(Some(user));
+        (state.query_tracker.get_total(user), dbs.len(), 0)
+    } else if is_admin {
         let dbs = state.db_manager.list_databases(None);
         let users = state.user_store.list_users().await;
         (state.query_tracker.get_total_all(), dbs.len(), users.len())
@@ -396,7 +402,9 @@ async fn analytics_handler(
         (state.query_tracker.get_total(&claims.sub), dbs.len(), 0)
     };
 
-    let volume_raw = if is_admin {
+    let volume_raw = if let Some(user) = filter_user {
+        state.query_tracker.get_volume(user)
+    } else if is_admin {
         state.query_tracker.get_volume_all()
     } else {
         state.query_tracker.get_volume(&claims.sub)
@@ -404,7 +412,18 @@ async fn analytics_handler(
 
     let volume: Vec<VolumePoint> = volume_raw.into_iter().map(|(ts, count)| VolumePoint { timestamp: ts, count }).collect();
 
-    Ok(Json(AnalyticsResponse { total_queries, database_count, user_count, volume }))
+    let per_user = if is_admin && filter_user.is_none() {
+        let mut entries: Vec<UserTotalsEntry> = state.query_tracker.list_user_totals()
+            .into_iter()
+            .map(|(username, total_queries)| UserTotalsEntry { username, total_queries })
+            .collect();
+        entries.sort_by(|a, b| b.total_queries.cmp(&a.total_queries));
+        entries
+    } else {
+        Vec::new()
+    };
+
+    Ok(Json(AnalyticsResponse { total_queries, database_count, user_count, volume, per_user }))
 }
 
 #[derive(Debug, serde::Deserialize)]

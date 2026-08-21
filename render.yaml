@@ -20,6 +20,8 @@ services:
         value: "REDACTED"
       - key: RUST_LOG
         value: "turso_service=info"
+      - key: ANALYTICS_RETENTION_HOURS
+        value: "168"
       - key: SEED_USERS
         value: "das-creatives:REDACTED"
       - key: SUPABASE_URL

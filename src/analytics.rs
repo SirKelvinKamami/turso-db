@@ -8,8 +8,8 @@ use std::sync::Arc;
 use crate::supabase::Supabase;
 
 const ANALYTICS_TABLE: &str = "turso_analytics";
-const MAX_VOLUME_POINTS: usize = 1440;
 pub const FLUSH_INTERVAL_SECS: u64 = 30;
+const HARD_CAP_POINTS: usize = 20160;
 
 #[derive(Clone)]
 pub struct QueryTracker {
@@ -17,6 +17,24 @@ pub struct QueryTracker {
     totals: Arc<DashMap<String, u64>>,
     dirty: Arc<DashSet<String>>,
     supabase: Option<Supabase>,
+    retention_secs: i64,
+}
+
+fn default_retention() -> i64 {
+    let hours: u64 = std::env::var("ANALYTICS_RETENTION_HOURS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(168);
+    (hours * 3600) as i64
+}
+
+fn prune_points(points: &mut Vec<(i64, u64)>, cutoff: i64) {
+    if points.first().map(|(ts, _)| *ts < cutoff).unwrap_or(false) {
+        points.retain(|(ts, _)| *ts >= cutoff);
+    }
+    while points.len() > HARD_CAP_POINTS {
+        points.remove(0);
+    }
 }
 
 impl QueryTracker {
@@ -26,6 +44,7 @@ impl QueryTracker {
             totals: Arc::new(DashMap::new()),
             dirty: Arc::new(DashSet::new()),
             supabase,
+            retention_secs: default_retention(),
         }
     }
 
@@ -34,6 +53,7 @@ impl QueryTracker {
             Some(sb) => sb,
             None => return,
         };
+        let cutoff = Utc::now().timestamp() - self.retention_secs;
         match sb.rows(ANALYTICS_TABLE, "").await {
             Ok(rows) => {
                 let row_count = rows.len();
@@ -42,10 +62,11 @@ impl QueryTracker {
                         let total = row.get("total_queries").and_then(|v| v.as_u64()).unwrap_or(0);
                         *self.totals.entry(username.to_string()).or_insert(0) = total;
                         if let Some(vol) = row.get("volume").and_then(|v| v.as_array()) {
-                            let points: Vec<(i64, u64)> = vol.iter().filter_map(|p| {
+                            let mut points: Vec<(i64, u64)> = vol.iter().filter_map(|p| {
                                 let arr = p.as_array()?;
                                 Some((arr.first()?.as_i64()?, arr.get(1)?.as_u64()?))
                             }).collect();
+                            prune_points(&mut points, cutoff);
                             self.volume.insert(username.to_string(), points);
                         }
                     }
@@ -60,18 +81,17 @@ impl QueryTracker {
         let now_minute = Utc::now().timestamp() / 60 * 60;
 
         let mut entry = self.volume.entry(username.to_string()).or_default();
+        let cutoff = Utc::now().timestamp() - self.retention_secs;
         if let Some(last) = entry.last_mut() {
             if last.0 == now_minute {
                 last.1 += 1;
             } else {
-                if entry.len() > MAX_VOLUME_POINTS {
-                    entry.remove(0);
-                }
                 entry.push((now_minute, 1));
             }
         } else {
             entry.push((now_minute, 1));
         }
+        prune_points(entry.value_mut(), cutoff);
 
         *self.totals.entry(username.to_string()).or_insert(0) += 1;
         self.dirty.insert(username.to_string());
@@ -89,10 +109,15 @@ impl QueryTracker {
             }
         };
         let usernames: Vec<String> = self.dirty.iter().map(|e| e.key().clone()).collect();
+        let cutoff = Utc::now().timestamp() - self.retention_secs;
         let mut rows = Vec::new();
         for username in &usernames {
             let total = self.totals.get(username).map(|e| *e).unwrap_or(0);
-            let volume = self.volume.get(username).map(|e| e.value().clone()).unwrap_or_default();
+            let volume = {
+                let mut entry = self.volume.entry(username.clone()).or_default();
+                prune_points(entry.value_mut(), cutoff);
+                entry.value().clone()
+            };
             let vol_json: Vec<Vec<i64>> = volume
                 .iter()
                 .map(|(ts, count)| vec![*ts, *count as i64])
@@ -148,12 +173,20 @@ impl QueryTracker {
     }
 }
 
+#[derive(Serialize, Clone)]
+pub struct UserTotalsEntry {
+    pub username: String,
+    pub total_queries: u64,
+}
+
 #[derive(Serialize)]
 pub struct AnalyticsResponse {
     pub total_queries: u64,
     pub database_count: usize,
     pub user_count: usize,
     pub volume: Vec<VolumePoint>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub per_user: Vec<UserTotalsEntry>,
 }
 
 #[derive(Serialize)]
