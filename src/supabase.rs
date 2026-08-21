@@ -94,11 +94,12 @@ impl Supabase {
     pub async fn upload_db(&self, owner: &str, id: &str, bytes: Vec<u8>) -> Result<(), String> {
         let path = format!("{}/{}.db", owner, id);
         let url = format!("{}/storage/v1/object/{}/{}", self.base_url, BUCKET, path);
-        let part = reqwest::multipart::Part::bytes(bytes)
-            .file_name(format!("{}.db", id))
-            .mime_str("application/octet-stream").map_err(|e| e.to_string())?;
-        let form = reqwest::multipart::Form::new().part("file", part);
-        let resp = self.client.post(&url).headers(self.headers()).multipart(form).send().await.map_err(|e| e.to_string())?;
+        let resp = self.client.post(&url)
+            .headers(self.headers())
+            .header("Content-Type", "application/octet-stream")
+            .header("x-upsert", "true")
+            .body(bytes)
+            .send().await.map_err(|e| e.to_string())?;
         let status = resp.status();
         let body = resp.text().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
