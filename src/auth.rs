@@ -56,5 +56,6 @@ pub fn generate_api_key() -> String {
 }
 
 pub fn is_admin(username: &str) -> bool {
-    username == "admin"
+    let configured = std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
+    username.eq_ignore_ascii_case(&configured)
 }
