@@ -105,8 +105,8 @@ impl DatabaseManager {
                         tokio::fs::write(&path, bytes).await?;
                         tracing::info!("Restored database {} ({}) from storage", name, id);
                     }
-                    Err(_) => {
-                        tracing::warn!("No stored backup for {}, creating empty", name);
+                    Err(e) => {
+                        tracing::warn!("No stored backup for {} ({}): {}", name, id, e);
                         Builder::new_local(&path).build().await?;
                     }
                 }
@@ -155,14 +155,22 @@ impl DatabaseManager {
         };
         self.databases.insert(id.clone(), (db, entry.clone()));
         if let Some(sb) = &self.supabase {
-            let _ = sb.insert("turso_databases", serde_json::json!({
+            if let Err(e) = sb.insert("turso_databases", serde_json::json!({
                 "id": id,
                 "name": entry.name,
                 "owner": entry.owner,
                 "created_at": entry.created_at,
-            })).await;
-            let bytes = tokio::fs::read(&path).await?;
-            let _ = sb.upload_db(&entry.owner, &id, bytes).await;
+            })).await {
+                tracing::error!("Failed to persist database registry row: {}", e);
+            }
+            match tokio::fs::read(&path).await {
+                Ok(bytes) => {
+                    if let Err(e) = sb.upload_db(&entry.owner, &id, bytes).await {
+                        tracing::error!("Failed to upload new database file: {}", e);
+                    }
+                }
+                Err(e) => tracing::error!("Failed to read new database file: {}", e),
+            }
         } else {
             self.save_manifest()?;
         }
@@ -186,7 +194,9 @@ impl DatabaseManager {
             }
         }
         let bytes = tokio::fs::read(&path).await?;
-        sb.upload_db(owner, db_id, bytes).await?;
+        if let Err(e) = sb.upload_db(owner, db_id, bytes).await {
+            tracing::error!("Failed to persist database {} to storage: {}", db_id, e);
+        }
         Ok(())
     }
 
@@ -234,9 +244,13 @@ impl DatabaseManager {
             std::fs::remove_file(path)?;
         }
         if let Some(sb) = &self.supabase {
-            let _ = sb.delete("turso_databases", &format!("id=eq.{}", id)).await;
+            if let Err(e) = sb.delete("turso_databases", &format!("id=eq.{}", id)).await {
+                tracing::error!("Failed to delete registry row for {}: {}", id, e);
+            }
             if let Some(owner) = owner {
-                let _ = sb.delete_db(&owner, id).await;
+                if let Err(e) = sb.delete_db(&owner, id).await {
+                    tracing::error!("Failed to delete storage object for {}: {}", id, e);
+                }
             }
         } else {
             self.save_manifest()?;
