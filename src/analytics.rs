@@ -36,6 +36,7 @@ impl QueryTracker {
         };
         match sb.rows(ANALYTICS_TABLE, "").await {
             Ok(rows) => {
+                let row_count = rows.len();
                 for row in rows {
                     if let Some(username) = row.get("username").and_then(|v| v.as_str()) {
                         let total = row.get("total_queries").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -49,7 +50,7 @@ impl QueryTracker {
                         }
                     }
                 }
-                tracing::info!("Loaded analytics for {} user(s) from Supabase", rows.len());
+                tracing::info!("Loaded analytics for {} user(s) from Supabase", row_count);
             }
             Err(e) => tracing::error!("Failed to load analytics from Supabase: {}", e),
         }
