@@ -9,7 +9,7 @@ use crate::supabase::Supabase;
 
 const ANALYTICS_TABLE: &str = "turso_analytics";
 const MAX_VOLUME_POINTS: usize = 1440;
-const FLUSH_INTERVAL_SECS: u64 = 30;
+pub const FLUSH_INTERVAL_SECS: u64 = 30;
 
 #[derive(Clone)]
 pub struct QueryTracker {
@@ -103,12 +103,13 @@ impl QueryTracker {
                 "updated_at": Utc::now().to_rfc3339(),
             }));
         }
+        let row_count = rows.len();
         match sb.upsert(ANALYTICS_TABLE, json!(rows)).await {
             Ok(()) => {
                 for username in &usernames {
                     self.dirty.remove(username);
                 }
-                rows.len()
+                row_count
             }
             Err(e) => {
                 tracing::error!("Failed to flush analytics to Supabase: {}", e);
