@@ -64,6 +64,21 @@ impl Supabase {
         serde_json::from_str::<Vec<Value>>(&body).map_err(|e| e.to_string())?.into_iter().next().ok_or_else(|| "no row returned".into())
     }
 
+    pub async fn upsert(&self, table: &str, rows: Value) -> Result<(), String> {
+        let url = format!("{}/rest/v1/{}", self.base_url, table);
+        let resp = self.client.post(&url)
+            .headers(self.headers_json())
+            .header("Prefer", "resolution=merge-duplicates")
+            .json(&rows)
+            .send().await.map_err(|e| e.to_string())?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("supabase upsert {}: {} {}", table, status, body));
+        }
+        Ok(())
+    }
+
     pub async fn update(&self, table: &str, filter: &str, patch: Value) -> Result<(), String> {
         let url = format!("{}/rest/v1/{}?{}", self.base_url, table, filter);
         let resp = self.client.patch(&url)

@@ -57,7 +57,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_store_arc = Arc::new(user_store);
 
     let rate_limiter = RateLimiter::new(config.max_queries_per_minute, 60);
-    let query_tracker = QueryTracker::new();
+    let query_tracker = QueryTracker::new(supabase.clone());
+    if supabase.is_some() {
+        query_tracker.load_from_supabase().await;
+        let tracker = query_tracker.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(analytics::FLUSH_INTERVAL_SECS));
+            loop {
+                interval.tick().await;
+                let flushed = tracker.flush().await;
+                if flushed > 0 {
+                    tracing::info!("Flushed analytics for {} user(s)", flushed);
+                }
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/dashboard", get(|| async { Redirect::permanent("/dashboard.html") }))
