@@ -236,6 +236,44 @@ impl DatabaseManager {
         Ok(results)
     }
 
+    pub async fn run_statement(&self, db_id: &str, sql: &str, p: turso::params::Params) -> Result<(Vec<(String, Option<String>)>, Vec<Vec<turso::Value>>, u64), Box<dyn std::error::Error>> {
+        let (db, entry) = self.get_database(db_id).await?;
+        let mut conn = db.connect()?;
+
+        let head = sql.trim_start().to_ascii_lowercase();
+        let is_query = head.starts_with("select")
+            || head.starts_with("with")
+            || head.starts_with("pragma")
+            || head.starts_with("explain")
+            || head.starts_with("values");
+
+        let mut cols: Vec<(String, Option<String>)> = Vec::new();
+        let mut rows_out: Vec<Vec<turso::Value>> = Vec::new();
+        let affected: u64;
+
+        if is_query {
+            let mut rows = conn.query(sql, p).await?;
+            for c in rows.columns() {
+                cols.push((c.name().to_string(), c.decl_type().map(|s| s.to_string())));
+            }
+            while let Some(row) = rows.next().await? {
+                let mut r = Vec::with_capacity(row.column_count());
+                for i in 0..row.column_count() {
+                    r.push(row.get_value(i)?);
+                }
+                rows_out.push(r);
+            }
+            affected = 0;
+        } else {
+            affected = conn.execute(sql, p).await?;
+            cols.push(("changes".to_string(), Some("integer".to_string())));
+            rows_out.push(vec![turso::Value::Integer(affected as i64)]);
+            self.persist_db(db_id, &entry.owner).await?;
+        }
+
+        Ok((cols, rows_out, affected))
+    }
+
     pub async fn delete_database(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
         let owner = self.databases.get(id).map(|e| e.value().1.owner.clone());
         self.databases.remove(id);

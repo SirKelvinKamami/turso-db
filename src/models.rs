@@ -76,6 +76,7 @@ pub struct ClientUserInfo {
     pub username: String,
     pub plan: String,
     pub created_at: String,
+    pub api_key: String,
     pub database_count: usize,
 }
 

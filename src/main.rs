@@ -2,6 +2,7 @@ mod analytics;
 mod auth;
 mod config;
 mod db;
+mod libsql;
 mod models;
 mod plans;
 mod ratelimit;

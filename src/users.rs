@@ -15,6 +15,8 @@ pub struct User {
     pub password_hash: String,
     #[serde(default = "default_plan")]
     pub plan: String,
+    #[serde(default)]
+    pub api_key: String,
     pub created_at: String,
 }
 
@@ -50,8 +52,37 @@ impl UserStore {
             username: v.get("username")?.as_str()?.to_string(),
             password_hash: v.get("password_hash")?.as_str()?.to_string(),
             plan: v.get("plan").and_then(|p| p.as_str()).unwrap_or("free").to_string(),
+            api_key: v.get("api_key").and_then(|k| k.as_str()).unwrap_or("").to_string(),
             created_at: v.get("created_at").and_then(|c| c.as_str()).unwrap_or("").to_string(),
         })
+    }
+
+    pub async fn find_by_api_key(&self, key: &str) -> Option<User> {
+        if key.is_empty() {
+            return None;
+        }
+        self.list_users().await.into_iter().find(|u| u.api_key == key)
+    }
+
+    pub async fn ensure_api_key(&self, username: &str) -> Result<String, String> {
+        let user = self.get_user(username).await.ok_or_else(|| "User not found".to_string())?;
+        if !user.api_key.is_empty() {
+            return Ok(user.api_key);
+        }
+        let key = crate::auth::generate_api_key();
+        self.set_api_key(username, &key).await?;
+        Ok(key)
+    }
+
+    pub async fn set_api_key(&self, username: &str, key: &str) -> Result<(), String> {
+        if let Some(sb) = &self.supabase {
+            sb.update("turso_users", &format!("username=eq.{}", username), serde_json::json!({ "api_key": key })).await
+        } else {
+            if let Some(mut u) = self.mem.get_mut(username) {
+                u.api_key = key.to_string();
+            }
+            Ok(())
+        }
     }
 
     pub async fn get_user(&self, username: &str) -> Option<User> {
@@ -85,6 +116,7 @@ impl UserStore {
             username: username.to_string(),
             password_hash: hash,
             plan: Plan::default().as_str().to_string(),
+            api_key: crate::auth::generate_api_key(),
             created_at: chrono::Utc::now().to_rfc3339(),
         };
 
@@ -93,6 +125,7 @@ impl UserStore {
                 "username": user.username,
                 "password_hash": user.password_hash,
                 "plan": user.plan,
+                "api_key": user.api_key,
             });
             let stored = sb.insert("turso_users", row).await.map_err(|e| {
                 if e.contains("duplicate") || e.contains("unique") || e.contains("23505") {

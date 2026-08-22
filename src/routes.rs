@@ -43,6 +43,8 @@ pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limit
         .route("/setup", post(setup_database))
         .route("/rate-limit", get(rate_limit_info))
         .route("/analytics", get(analytics_handler))
+        .route("/libsql/{db}/v2/pipeline", post(crate::libsql::pipeline_handler))
+        .route("/users/{username}/api-key", post(rotate_user_api_key))
         .with_state(state)
 }
 
@@ -142,12 +144,34 @@ async fn list_users(
     if claims.typ != "admin" {
         return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin only".into(), code: "FORBIDDEN".into() })));
     }
-    let mut result: Vec<ClientUserInfo> = state.user_store.list_users().await.iter().map(|u| {
+    let mut result: Vec<ClientUserInfo> = Vec::new();
+    for u in state.user_store.list_users().await.iter() {
         let db_count = state.db_manager.list_databases(Some(&u.username)).len();
-        ClientUserInfo { id: u.id.clone(), username: u.username.clone(), plan: u.plan.clone(), created_at: u.created_at.clone(), database_count: db_count }
-    }).collect();
+        let api_key = if u.api_key.is_empty() {
+            state.user_store.ensure_api_key(&u.username).await.unwrap_or_default()
+        } else {
+            u.api_key.clone()
+        };
+        result.push(ClientUserInfo { id: u.id.clone(), username: u.username.clone(), plan: u.plan.clone(), created_at: u.created_at.clone(), api_key, database_count: db_count });
+    }
     result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     Ok(Json(result))
+}
+
+async fn rotate_user_api_key(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(username): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    if claims.typ != "admin" {
+        return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin only".into(), code: "FORBIDDEN".into() })));
+    }
+    let key = crate::auth::generate_api_key();
+    state.user_store.set_api_key(&username, &key).await.map_err(|e| {
+        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: e, code: "NOT_FOUND".into() }))
+    })?;
+    Ok(Json(serde_json::json!({ "username": username, "api_key": key })))
 }
 
 async fn current_user(
