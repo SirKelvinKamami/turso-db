@@ -182,7 +182,7 @@ fn stmt_ok(cols: Vec<(String, Option<String>)>, rows: Vec<Vec<turso::Value>>, af
         .collect();
     json!({
         "type": "ok",
-        "response": { "result": {
+        "response": { "type": "execute", "result": {
             "cols": cols_json,
             "rows": rows_json,
             "affected_row_count": affected,
@@ -270,11 +270,11 @@ pub async fn pipeline_handler(
                 }
                 results.push(json!({
                     "type": "ok",
-                    "response": { "result": { "step_results": step_results, "step_errors": step_errors } }
+                    "response": { "type": "batch", "result": { "step_results": step_results, "step_errors": step_errors } }
                 }));
             }
             "close" => {
-                results.push(json!({ "type": "ok" }));
+                results.push(json!({ "type": "ok", "response": { "type": "close" } }));
             }
             other => {
                 tracing::warn!("Unsupported libsql request type: {}", other);
