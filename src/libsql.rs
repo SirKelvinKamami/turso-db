@@ -102,12 +102,32 @@ fn arg_to_turso(v: &Value) -> Result<turso::Value, String> {
     value_to_turso(v)
 }
 
+fn sigil_key(sql: &str, key: &str) -> std::borrow::Cow<'static, str> {
+    if key.starts_with(':') || key.starts_with('@') || key.starts_with('$') {
+        return key.to_string().into();
+    }
+    for sigil in [':', '@', '$'] {
+        let needle = format!("{}{}", sigil, key);
+        let mut from = 0;
+        while let Some(pos) = sql[from..].find(&needle) {
+            let abs = from + pos + needle.len();
+            let next = sql[abs..].chars().next();
+            let boundary = next.map(|c| !c.is_alphanumeric() && c != '_').unwrap_or(true);
+            if boundary {
+                return format!("{}{}", sigil, key).into();
+            }
+            from = abs;
+        }
+    }
+    format!(":{}", key).into()
+}
+
 fn stmt_params(stmt: &HranaStmt) -> Result<turso::params::Params, String> {
     if let Some(named) = &stmt.named_args {
         if let Some(map) = named.as_object() {
             let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> = Vec::with_capacity(map.len());
             for (k, v) in map {
-                out.push((k.clone().into(), arg_to_turso(v)?));
+                out.push((sigil_key(&stmt.sql, k), arg_to_turso(v)?));
             }
             return Ok(turso::params::Params::Named(out));
         }
@@ -124,7 +144,7 @@ fn stmt_params(stmt: &HranaStmt) -> Result<turso::params::Params, String> {
         Some(Value::Object(map)) => {
             let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> = Vec::with_capacity(map.len());
             for (k, v) in map {
-                out.push((k.clone().into(), arg_to_turso(v)?));
+                out.push((sigil_key(&stmt.sql, k), arg_to_turso(v)?));
             }
             Ok(turso::params::Params::Named(out))
         }
