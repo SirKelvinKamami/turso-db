@@ -30,3 +30,11 @@ jobs:
 
       - name: cargo build
         run: cargo build --release
+
+      - name: Deploy to Render
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          deploy_url: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          curl -fsS -X POST "$deploy_url"
+          echo "Render deploy triggered"
