@@ -62,27 +62,37 @@ impl QueryTracker {
             None => return,
         };
         let cutoff = Utc::now().timestamp() - self.retention_secs;
-        match sb.rows(ANALYTICS_TABLE, "").await {
-            Ok(rows) => {
-                let row_count = rows.len();
-                for row in rows {
-                    if let Some(username) = row.get("username").and_then(|v| v.as_str()) {
-                        let total = row.get("total_queries").and_then(json_to_u64).unwrap_or(0);
-                        *self.totals.entry(username.to_string()).or_insert(0) = total;
-                        if let Some(vol) = row.get("volume").and_then(|v| v.as_array()) {
-                            let mut points: Vec<(i64, u64)> = vol.iter().filter_map(|p| {
-                                let arr = p.as_array()?;
-                                Some((arr.first()?.as_i64()?, arr.get(1)?.as_u64()?))
-                            }).collect();
-                            prune_points(&mut points, cutoff);
-                            self.volume.insert(username.to_string(), points);
-                        }
+        let mut rows: Vec<Value> = Vec::new();
+        for attempt in 1..=5u32 {
+            match sb.rows(ANALYTICS_TABLE, "").await {
+                Ok(r) => {
+                    rows = r;
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("Analytics load attempt {}/{} failed: {}", attempt, 5, e);
+                    if attempt < 5 {
+                        tokio::time::sleep(std::time::Duration::from_secs(5 * attempt as u64)).await;
                     }
                 }
-                tracing::info!("Loaded analytics for {} user(s) from Supabase", row_count);
             }
-            Err(e) => tracing::error!("Failed to load analytics from Supabase: {}", e),
         }
+        let row_count = rows.len();
+        for row in rows {
+            if let Some(username) = row.get("username").and_then(|v| v.as_str()) {
+                let total = row.get("total_queries").and_then(json_to_u64).unwrap_or(0);
+                *self.totals.entry(username.to_string()).or_insert(0) = total;
+                if let Some(vol) = row.get("volume").and_then(|v| v.as_array()) {
+                    let mut points: Vec<(i64, u64)> = vol.iter().filter_map(|p| {
+                        let arr = p.as_array()?;
+                        Some((arr.first()?.as_i64()?, arr.get(1)?.as_u64()?))
+                    }).collect();
+                    prune_points(&mut points, cutoff);
+                    self.volume.insert(username.to_string(), points);
+                }
+            }
+        }
+        tracing::info!("Loaded analytics for {} user(s) from Supabase", row_count);
     }
 
     pub fn track_query(&self, username: &str) {
