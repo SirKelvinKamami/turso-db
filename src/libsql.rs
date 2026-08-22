@@ -105,9 +105,9 @@ fn arg_to_turso(v: &Value) -> Result<turso::Value, String> {
 fn stmt_params(stmt: &HranaStmt) -> Result<turso::params::Params, String> {
     if let Some(named) = &stmt.named_args {
         if let Some(map) = named.as_object() {
-            let mut out: Vec<(String, turso::Value)> = Vec::with_capacity(map.len());
+            let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> = Vec::with_capacity(map.len());
             for (k, v) in map {
-                out.push((k.clone(), arg_to_turso(v)?));
+                out.push((k.clone().into(), arg_to_turso(v)?));
             }
             return Ok(turso::params::Params::Named(out));
         }
@@ -122,9 +122,9 @@ fn stmt_params(stmt: &HranaStmt) -> Result<turso::params::Params, String> {
             Ok(turso::params::Params::Positional(out))
         }
         Some(Value::Object(map)) => {
-            let mut out: Vec<(String, turso::Value)> = Vec::with_capacity(map.len());
+            let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> = Vec::with_capacity(map.len());
             for (k, v) in map {
-                out.push((k.clone(), arg_to_turso(v)?));
+                out.push((k.clone().into(), arg_to_turso(v)?));
             }
             Ok(turso::params::Params::Named(out))
         }
@@ -172,7 +172,12 @@ pub async fn pipeline_handler(
     Path(target): Path<String>,
     Json(body): Json<PipelineRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let token = extract_token_from_header(&headers).ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "Missing bearer token"))?;
+    let auth_header = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "Missing Authorization header"))?;
+    let token = extract_token_from_header(auth_header)
+        .map_err(|_| api_err(StatusCode::UNAUTHORIZED, "Invalid Authorization header"))?;
     let user = state
         .user_store
         .find_by_api_key(&token)
