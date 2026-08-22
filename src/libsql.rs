@@ -154,18 +154,27 @@ fn stmt_params(stmt: &HranaStmt) -> Result<turso::params::Params, String> {
 
 fn value_to_json(v: turso::Value) -> Value {
     match v {
-        turso::Value::Null => Value::Null,
-        turso::Value::Integer(n) => json!(n),
-        turso::Value::Real(f) => json!(f),
-        turso::Value::Text(s) => json!(s),
-        turso::Value::Blob(b) => json!(format!("blob:{}bytes", b.len())),
+        turso::Value::Null => json!({ "type": "null" }),
+        turso::Value::Integer(n) => json!({ "type": "integer", "value": n.to_string() }),
+        turso::Value::Real(f) => json!({ "type": "float", "value": f }),
+        turso::Value::Text(s) => json!({ "type": "text", "value": s }),
+        turso::Value::Blob(b) => json!({
+            "type": "blob",
+            "base64": base64::engine::general_purpose::STANDARD.encode(b)
+        }),
     }
 }
 
 fn stmt_ok(cols: Vec<(String, Option<String>)>, rows: Vec<Vec<turso::Value>>, affected: u64) -> Value {
     let cols_json: Vec<Value> = cols
         .into_iter()
-        .map(|(name, decl)| json!({ "name": name, "decltype": decl }))
+        .map(|(name, decl)| {
+            let mut c = json!({ "name": name });
+            if let Some(d) = decl {
+                c["decltype"] = json!(d);
+            }
+            c
+        })
         .collect();
     let rows_json: Vec<Value> = rows
         .into_iter()
@@ -177,7 +186,6 @@ fn stmt_ok(cols: Vec<(String, Option<String>)>, rows: Vec<Vec<turso::Value>>, af
             "cols": cols_json,
             "rows": rows_json,
             "affected_row_count": affected,
-            "last_insert_rowid": null,
         }}
     })
 }
@@ -275,5 +283,5 @@ pub async fn pipeline_handler(
         }
     }
 
-    Ok(Json(json!({ "results": results, "baton": null })))
+    Ok(Json(json!({ "results": results })))
 }
