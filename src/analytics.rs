@@ -37,6 +37,14 @@ fn prune_points(points: &mut Vec<(i64, u64)>, cutoff: i64) {
     }
 }
 
+fn json_to_u64(v: &Value) -> Option<u64> {
+    match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
 impl QueryTracker {
     pub fn new(supabase: Option<Supabase>) -> Self {
         Self {
@@ -59,7 +67,7 @@ impl QueryTracker {
                 let row_count = rows.len();
                 for row in rows {
                     if let Some(username) = row.get("username").and_then(|v| v.as_str()) {
-                        let total = row.get("total_queries").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let total = row.get("total_queries").and_then(json_to_u64).unwrap_or(0);
                         *self.totals.entry(username.to_string()).or_insert(0) = total;
                         if let Some(vol) = row.get("volume").and_then(|v| v.as_array()) {
                             let mut points: Vec<(i64, u64)> = vol.iter().filter_map(|p| {
