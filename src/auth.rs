@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,12 +10,12 @@ pub struct Claims {
     pub exp: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TokenResponse {
-    pub token: String,
-}
-
-pub fn create_token(user_id: &str, user_type: &str, secret: &str, expiry_hours: u64) -> Result<String, Box<dyn std::error::Error>> {
+pub fn create_token(
+    user_id: &str,
+    user_type: &str,
+    secret: &str,
+    expiry_hours: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
     let claims = Claims {
         sub: user_id.to_string(),
         typ: user_type.to_string(),

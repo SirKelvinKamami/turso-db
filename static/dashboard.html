@@ -448,6 +448,9 @@ let analyticsView = '2d';
 // Login check
 if (token) { document.getElementById('loginPage').style.display = 'none'; document.getElementById('app').style.display = 'flex'; initApp(); }
 
+// Wire up Google sign-in button (server verifies the ID token)
+initGoogleSignIn();
+
 // Login 3D background
 (function() {
   const canvas = document.getElementById('login-canvas');
@@ -504,24 +507,46 @@ document.getElementById('loginForm').onsubmit = async (e) => {
 };
 
 function handleGoogleSignIn(response) {
-  const payload = JSON.parse(atob(response.credential.split('.')[1]));
+  if (!response.credential) { showMsg('login-msg', 'Google sign-in failed', 'error'); return; }
   fetch(`${API_BASE}/auth/google-token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: payload.email, name: payload.name })
-  }).then(r => r.json()).then(data => {
+    body: JSON.stringify({ id_token: response.credential })
+  }).then(async r => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { showMsg('login-msg', data.error || 'Google login failed', 'error'); return null; }
+    return data;
+  }).then(data => {
+    if (!data) return;
     if (data.token) {
       token = data.token; userType = 'user';
       localStorage.setItem('token', token);
-      localStorage.setItem('user-email', payload.email);
-      localStorage.setItem('user-name', payload.name);
+      localStorage.setItem('user-email', data.email);
+      localStorage.setItem('user-name', data.name || data.email.split('@')[0]);
       localStorage.setItem('user-type', 'user');
       localStorage.setItem('user-plan', 'free');
       document.getElementById('loginPage').style.display = 'none';
       document.getElementById('app').style.display = 'flex';
       initApp();
     }
-  });
+  }).catch(() => showMsg('login-msg', 'Connection error', 'error'));
+}
+
+function initGoogleSignIn() {
+  fetch(`${API_BASE}/auth/google-config`)
+    .then(r => r.json())
+    .then(cfg => {
+      if (!cfg.enabled || !window.google?.accounts) return;
+      google.accounts.id.initialize({
+        client_id: cfg.client_id,
+        callback: handleGoogleSignIn
+      });
+      google.accounts.id.renderButton(
+        document.getElementById('g_id_signin'),
+        { theme: 'outline', size: 'large', shape: 'pill' }
+      );
+    })
+    .catch(() => {});
 }
 
 function initApp() {

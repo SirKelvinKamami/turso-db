@@ -1,11 +1,11 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use base64::Engine;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::auth::extract_token_from_header;
 use crate::plans::Plan;
@@ -62,7 +62,9 @@ fn value_to_turso(v: &Value) -> Result<turso::Value, String> {
             if let Some(i) = n.as_i64() {
                 Ok(turso::Value::Integer(i))
             } else {
-                n.as_f64().map(turso::Value::Real).ok_or_else(|| "invalid number".to_string())
+                n.as_f64()
+                    .map(turso::Value::Real)
+                    .ok_or_else(|| "invalid number".to_string())
             }
         }
         Value::String(s) => Ok(turso::Value::Text(s.clone())),
@@ -78,7 +80,11 @@ fn arg_to_turso(v: &Value) -> Result<turso::Value, String> {
             "integer" => obj
                 .get("value")
                 .and_then(|x| x.as_i64())
-                .or_else(|| obj.get("value").and_then(|x| x.as_str()).and_then(|s| s.parse().ok()))
+                .or_else(|| {
+                    obj.get("value")
+                        .and_then(|x| x.as_str())
+                        .and_then(|s| s.parse().ok())
+                })
                 .map(turso::Value::Integer)
                 .ok_or_else(|| "invalid integer arg".to_string()),
             "float" => obj
@@ -93,7 +99,9 @@ fn arg_to_turso(v: &Value) -> Result<turso::Value, String> {
                 .ok_or_else(|| "invalid text arg".to_string()),
             "blob" => {
                 let raw = obj.get("value").and_then(|x| x.as_str()).unwrap_or("");
-                let bytes = base64::engine::general_purpose::STANDARD.decode(raw).map_err(|e| e.to_string())?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(raw)
+                    .map_err(|e| e.to_string())?;
                 Ok(turso::Value::Blob(bytes))
             }
             _ => value_to_turso(v),
@@ -112,7 +120,9 @@ fn sigil_key(sql: &str, key: &str) -> std::borrow::Cow<'static, str> {
         while let Some(pos) = sql[from..].find(&needle) {
             let abs = from + pos + needle.len();
             let next = sql[abs..].chars().next();
-            let boundary = next.map(|c| !c.is_alphanumeric() && c != '_').unwrap_or(true);
+            let boundary = next
+                .map(|c| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(true);
             if boundary {
                 return format!("{}{}", sigil, key).into();
             }
@@ -123,14 +133,15 @@ fn sigil_key(sql: &str, key: &str) -> std::borrow::Cow<'static, str> {
 }
 
 fn stmt_params(stmt: &HranaStmt) -> Result<turso::params::Params, String> {
-    if let Some(named) = &stmt.named_args {
-        if let Some(map) = named.as_object() {
-            let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> = Vec::with_capacity(map.len());
-            for (k, v) in map {
-                out.push((sigil_key(&stmt.sql, k), arg_to_turso(v)?));
-            }
-            return Ok(turso::params::Params::Named(out));
+    if let Some(named) = &stmt.named_args
+        && let Some(map) = named.as_object()
+    {
+        let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> =
+            Vec::with_capacity(map.len());
+        for (k, v) in map {
+            out.push((sigil_key(&stmt.sql, k), arg_to_turso(v)?));
         }
+        return Ok(turso::params::Params::Named(out));
     }
     match &stmt.args {
         None => Ok(turso::params::Params::None),
@@ -142,7 +153,8 @@ fn stmt_params(stmt: &HranaStmt) -> Result<turso::params::Params, String> {
             Ok(turso::params::Params::Positional(out))
         }
         Some(Value::Object(map)) => {
-            let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> = Vec::with_capacity(map.len());
+            let mut out: Vec<(std::borrow::Cow<'static, str>, turso::Value)> =
+                Vec::with_capacity(map.len());
             for (k, v) in map {
                 out.push((sigil_key(&stmt.sql, k), arg_to_turso(v)?));
             }
@@ -165,7 +177,11 @@ fn value_to_json(v: turso::Value) -> Value {
     }
 }
 
-fn stmt_ok(cols: Vec<(String, Option<String>)>, rows: Vec<Vec<turso::Value>>, affected: u64) -> Value {
+fn stmt_ok(
+    cols: Vec<(String, Option<String>)>,
+    rows: Vec<Vec<turso::Value>>,
+    affected: u64,
+) -> Value {
     let cols_json: Vec<Value> = cols
         .into_iter()
         .map(|(name, decl)| {
@@ -213,7 +229,10 @@ pub async fn pipeline_handler(
         .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "Invalid API key"))?;
 
     let admin = crate::auth::is_admin(&user.username);
-    let databases = state.db_manager.list_databases(if admin { None } else { Some(&user.username) });
+    let databases =
+        state
+            .db_manager
+            .list_databases(if admin { None } else { Some(&user.username) });
     let db_id = databases
         .iter()
         .find(|(id, entry)| entry.name == target || id.as_str() == target)
@@ -226,7 +245,10 @@ pub async fn pipeline_handler(
         .check_with_limit(&user.username, plan.max_queries_per_minute())
         .is_err()
     {
-        return Err(api_err(StatusCode::TOO_MANY_REQUESTS, "Query rate limit exceeded for your plan"));
+        return Err(api_err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Query rate limit exceeded for your plan",
+        ));
     }
 
     let mut results: Vec<Value> = Vec::with_capacity(body.requests.len());
@@ -262,7 +284,9 @@ pub async fn pipeline_handler(
                     state.query_tracker.track_query(&user.username);
                     match stmt_params(stmt) {
                         Ok(p) => match state.db_manager.run_statement(&db_id, &stmt.sql, p).await {
-                            Ok((cols, rows, affected)) => step_results.push(stmt_ok(cols, rows, affected)),
+                            Ok((cols, rows, affected)) => {
+                                step_results.push(stmt_ok(cols, rows, affected))
+                            }
                             Err(e) => step_results.push(stmt_err(&e.to_string())),
                         },
                         Err(e) => step_results.push(stmt_err(&e)),

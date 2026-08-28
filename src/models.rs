@@ -42,12 +42,6 @@ pub struct ErrorResponse {
     pub code: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct GoogleCallback {
-    pub code: String,
-    pub state: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
     pub id: String,
@@ -60,6 +54,11 @@ pub struct UserResponse {
 pub struct CreateUserRequest {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GoogleTokenRequest {
+    pub id_token: String,
 }
 
 #[derive(Debug, Serialize)]

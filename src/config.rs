@@ -7,9 +7,12 @@ pub struct Config {
     pub data_dir: String,
     pub jwt_secret: String,
     pub jwt_expiry_hours: u64,
+    #[allow(dead_code)]
     pub max_databases: usize,
     pub max_queries_per_minute: u64,
+    #[allow(dead_code)]
     pub encryption_key: Option<String>,
+    pub google_client_id: String,
     pub seed_users: Vec<(String, String)>,
 }
 
@@ -22,8 +25,7 @@ impl Config {
             bind_address: std::env::var("BIND_ADDRESS")
                 .or_else(|_| std::env::var("PORT").map(|p| format!("0.0.0.0:{}", p)))
                 .unwrap_or_else(|_| "0.0.0.0:3000".to_string()),
-            data_dir: std::env::var("DATA_DIR")
-                .unwrap_or_else(|_| "./data".to_string()),
+            data_dir: std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string()),
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "change-me-in-production".to_string()),
             jwt_expiry_hours: std::env::var("JWT_EXPIRY_HOURS")
@@ -36,6 +38,7 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()?,
             encryption_key: std::env::var("ENCRYPTION_KEY").ok(),
+            google_client_id: std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
             seed_users: {
                 let raw = std::env::var("SEED_USERS").unwrap_or_default();
                 raw.split(',')

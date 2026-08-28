@@ -1,10 +1,10 @@
 // DAS Creatives Hub — One-shot setup
-// Just paste this in browser console devtools on the dashboard page.
-// Or use it as a regular module.
+// Update credentials, then paste this in browser console on the dashboard page.
+// Never commit real passwords.
 
 const API = 'https://turso-db-8svn.onrender.com/v1';
 const USER = 'das-creatives';
-const PASS = 'REDACTED';
+const PASS = 'REPLACE_WITH_USER_PASSWORD';
 
 async function setup() {
   const login = await fetch(`${API}/auth/login`, {

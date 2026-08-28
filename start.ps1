@@ -7,11 +7,18 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Turso Service - Starting..." -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Set environment
-$env:RUSTUP_HOME = "D:\rustup"
-$env:CARGO_HOME = "D:\cargo"
-$env:CARGO_TARGET_DIR = "D:\turso-target"
-$env:PATH = "C:\msys64\mingw64\bin;" + $env:PATH
+# Set Rust toolchain locations
+$env:RUSTUP_HOME = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { "D:\rustup" }
+$env:CARGO_HOME = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { "D:\cargo" }
+
+# Locate cargo and a MinGW-w64 bin (needed to build the gnu target on Windows)
+$cargoBin = "$env:USERPROFILE\.cargo\bin"
+$mingwBins = @(
+    "D:\Backups\Ruby40-x64\msys64\ucrt64\bin",
+    "C:\msys64\mingw64\bin",
+    "C:\msys64\ucrt64\bin"
+) | Where-Object { Test-Path $_ }
+$env:PATH = @($cargoBin, $mingwBins) + $env:PATH -join ";"
 
 # Check if already running
 $existing = Get-Process turso-service -ErrorAction SilentlyContinue
@@ -27,14 +34,19 @@ $dataDir = if (Test-Path ".env") {
 } else { ".\data" }
 New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 
-# Start server
-$exePath = "D:\turso-target\debug\turso-service.exe"
+# Build if the binary is missing (first run)
+$exePath = Join-Path $PWD "target\debug\turso-service.exe"
 if (-not (Test-Path $exePath)) {
-    Write-Host "[ERROR] Binary not found at $exePath" -ForegroundColor Red
-    Write-Host "        Run: cargo build --release" -ForegroundColor Yellow
-    exit 1
+    Write-Host "[BUILD] Binary not found - building debug binary..." -ForegroundColor Yellow
+    cargo build
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exePath)) {
+        Write-Host "[ERROR] Build failed. Check that a MinGW-w64 toolchain is available." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[BUILD] Build complete" -ForegroundColor Green
 }
 
+# Start server
 $proc = Start-Process -FilePath $exePath -WorkingDirectory $PWD -PassThru
 Start-Sleep -Seconds 2
 
@@ -46,9 +58,6 @@ try {
     Write-Host "     PID: $($proc.Id)" -ForegroundColor Gray
     Write-Host "     Health: http://localhost:3000/v1/health" -ForegroundColor Gray
     Write-Host "     Version: $($health.version)" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "Test it:" -ForegroundColor Cyan
-    Write-Host '  $token = (Invoke-RestMethod -Uri "http://localhost:3000/v1/auth/login" -Method Post -ContentType "application/json" -Body ''{"username":"admin","password":"password"}'').token' -ForegroundColor Gray
     Write-Host ""
 } catch {
     Write-Host "[WARN] Server started but health check failed" -ForegroundColor Yellow

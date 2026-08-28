@@ -1,14 +1,14 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{get, post, put, delete},
-    Json, Router,
+    routing::{delete, get, post, put},
 };
 use chrono::Utc;
 use std::collections::HashMap;
 
-use crate::analytics::{QueryTracker, AnalyticsResponse, UserTotalsEntry, VolumePoint};
-use crate::auth::{create_token, verify_token, extract_token_from_header, generate_api_key, is_admin, Claims};
+use crate::analytics::{AnalyticsResponse, QueryTracker, UserTotalsEntry, VolumePoint};
+use crate::auth::{Claims, create_token, extract_token_from_header, is_admin, verify_token};
 use crate::config::Config;
 use crate::db::DatabaseManager;
 use crate::models::*;
@@ -24,13 +24,24 @@ pub struct AppState {
     pub query_tracker: QueryTracker,
 }
 
-pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limiter: RateLimiter, query_tracker: QueryTracker) -> Router {
-    let state = AppState { db_manager, user_store, rate_limiter, query_tracker };
+pub fn api_routes(
+    db_manager: DatabaseManager,
+    user_store: UserStore,
+    rate_limiter: RateLimiter,
+    query_tracker: QueryTracker,
+) -> Router {
+    let state = AppState {
+        db_manager,
+        user_store,
+        rate_limiter,
+        query_tracker,
+    };
 
     Router::new()
         .route("/health", get(health_check))
         .route("/auth/login", post(login))
         .route("/auth/google-token", post(google_token))
+        .route("/auth/google-config", get(google_config))
         .route("/auth/signup", post(signup))
         .route("/users", get(list_users))
         .route("/users/me", get(current_user))
@@ -43,7 +54,10 @@ pub fn api_routes(db_manager: DatabaseManager, user_store: UserStore, rate_limit
         .route("/setup", post(setup_database))
         .route("/rate-limit", get(rate_limit_info))
         .route("/analytics", get(analytics_handler))
-        .route("/libsql/{db}/v2/pipeline", post(crate::libsql::pipeline_handler))
+        .route(
+            "/libsql/{db}/v2/pipeline",
+            post(crate::libsql::pipeline_handler),
+        )
         .route("/users/{username}/api-key", post(rotate_user_api_key))
         .with_state(state)
 }
@@ -56,7 +70,10 @@ fn check_rate_limit(state: &AppState, headers: &HeaderMap) -> Result<(), StatusC
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    state.rate_limiter.check(&ip).map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+    state
+        .rate_limiter
+        .check(&ip)
+        .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
     Ok(())
 }
 
@@ -64,20 +81,37 @@ async fn plan_for(state: &AppState, username: &str, user_type: &str) -> Plan {
     if user_type == "admin" {
         Plan::Enterprise
     } else {
-        state.user_store.get_user(username).await.map(|u| Plan::from_str(&u.plan)).unwrap_or(Plan::Free)
+        state
+            .user_store
+            .get_user(username)
+            .await
+            .map(|u| Plan::from_str(&u.plan))
+            .unwrap_or(Plan::Free)
     }
 }
 
-async fn check_user_rate_limit(state: &AppState, username: &str, user_type: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+async fn check_user_rate_limit(
+    state: &AppState,
+    username: &str,
+    user_type: &str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let plan = plan_for(state, username, user_type).await;
-    state.rate_limiter.check_with_limit(username, plan.max_queries_per_minute())
-        .map_err(|_| (StatusCode::TOO_MANY_REQUESTS, Json(ErrorResponse { error: "Query rate limit exceeded for your plan".into(), code: "RATE_LIMIT".into() })))?;
+    state
+        .rate_limiter
+        .check_with_limit(username, plan.max_queries_per_minute())
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ErrorResponse {
+                    error: "Query rate limit exceeded for your plan".into(),
+                    code: "RATE_LIMIT".into(),
+                }),
+            )
+        })?;
     Ok(())
 }
 
-async fn health_check(
-    state: State<AppState>,
-) -> Json<serde_json::Value> {
+async fn health_check(state: State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "healthy",
         "version": env!("CARGO_PKG_VERSION"),
@@ -98,30 +132,124 @@ async fn login(
     let config = Config::load().expect("Failed to load config");
 
     let admin_user = std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
-    let admin_pass = std::env::var("ADMIN_PASSWORD").expect("ADMIN_PASSWORD must be set in .env");
 
-    if payload.username == admin_user && payload.password == admin_pass {
-        let token = create_token(&payload.username, "admin", &config.jwt_secret, config.jwt_expiry_hours)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
-        return Ok(Json(serde_json::json!({"token": token, "user": {"username": payload.username, "type": "admin", "plan": Plan::Enterprise.as_str()}})));
+    if payload.username == admin_user {
+        let admin_pass = std::env::var("ADMIN_PASSWORD").map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Server not configured: ADMIN_PASSWORD missing", "code": "CONFIG_ERROR"})))
+        })?;
+        if payload.password == admin_pass {
+            let token = create_token(
+                &payload.username,
+                "admin",
+                &config.jwt_secret,
+                config.jwt_expiry_hours,
+            )
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                )
+            })?;
+            return Ok(Json(
+                serde_json::json!({"token": token, "user": {"username": payload.username, "type": "admin", "plan": Plan::Enterprise.as_str()}}),
+            ));
+        }
     }
 
-    if let Ok(user) = state.user_store.verify_password(&payload.username, &payload.password).await {
-        let token = create_token(&user.username, "user", &config.jwt_secret, config.jwt_expiry_hours)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))))?;
-        return Ok(Json(serde_json::json!({"token": token, "user": {"username": user.username, "id": user.id, "type": "user", "plan": user.plan}})));
+    if let Ok(user) = state
+        .user_store
+        .verify_password(&payload.username, &payload.password)
+        .await
+    {
+        let token = create_token(
+            &user.username,
+            "user",
+            &config.jwt_secret,
+            config.jwt_expiry_hours,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })?;
+        return Ok(Json(
+            serde_json::json!({"token": token, "user": {"username": user.username, "id": user.id, "type": "user", "plan": user.plan}}),
+        ));
     }
 
-    Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Invalid credentials", "code": "AUTH_FAILED"}))))
+    Err((
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": "Invalid credentials", "code": "AUTH_FAILED"})),
+    ))
+}
+
+async fn google_config() -> Json<serde_json::Value> {
+    let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
+    Json(serde_json::json!({
+        "client_id": client_id,
+        "enabled": !client_id.is_empty(),
+    }))
 }
 
 async fn google_token(
+    state: State<AppState>,
     Json(payload): Json<GoogleTokenRequest>,
 ) -> Result<Json<UserResponse>, (StatusCode, Json<ErrorResponse>)> {
     let config = Config::load().expect("Failed to load config");
-    let jwt_token = create_token(&payload.email, "user", &config.jwt_secret, config.jwt_expiry_hours)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "JWT_ERROR".into() })))?;
-    Ok(Json(UserResponse { id: generate_api_key(), email: payload.email, name: payload.name, token: jwt_token }))
+    if config.google_client_id.is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Google sign-in is not configured (set GOOGLE_CLIENT_ID)".into(),
+                code: "CONFIG_ERROR".into(),
+            }),
+        ));
+    }
+
+    let profile = crate::google::verify_id_token(&payload.id_token, &config.google_client_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: e,
+                    code: "GOOGLE_AUTH_FAILED".into(),
+                }),
+            )
+        })?;
+
+    if state.user_store.get_user(&profile.email).await.is_none() {
+        let random_password = uuid::Uuid::new_v4().to_string();
+        let _ = state
+            .user_store
+            .create_user(&profile.email, &random_password)
+            .await;
+        tracing::info!("Provisioned Google user: {}", profile.email);
+    }
+
+    let jwt_token = create_token(
+        &profile.email,
+        "user",
+        &config.jwt_secret,
+        config.jwt_expiry_hours,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+                code: "JWT_ERROR".into(),
+            }),
+        )
+    })?;
+    tracing::info!("Google login: {}", profile.email);
+    Ok(Json(UserResponse {
+        id: profile.sub,
+        email: profile.email,
+        name: profile.name,
+        token: jwt_token,
+    }))
 }
 
 async fn signup(
@@ -130,10 +258,26 @@ async fn signup(
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<UserInfo>, (StatusCode, Json<ErrorResponse>)> {
     authenticate_admin(&headers)?;
-    let user = state.user_store.create_user(&payload.username, &payload.password).await
-        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
+    let user = state
+        .user_store
+        .create_user(&payload.username, &payload.password)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e,
+                    code: "USER_ERROR".into(),
+                }),
+            )
+        })?;
     tracing::info!("Created user: {}", user.username);
-    Ok(Json(UserInfo { id: user.id, username: user.username, plan: user.plan, created_at: user.created_at }))
+    Ok(Json(UserInfo {
+        id: user.id,
+        username: user.username,
+        plan: user.plan,
+        created_at: user.created_at,
+    }))
 }
 
 async fn list_users(
@@ -142,17 +286,34 @@ async fn list_users(
 ) -> Result<Json<Vec<ClientUserInfo>>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     if claims.typ != "admin" {
-        return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin only".into(), code: "FORBIDDEN".into() })));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Admin only".into(),
+                code: "FORBIDDEN".into(),
+            }),
+        ));
     }
     let mut result: Vec<ClientUserInfo> = Vec::new();
     for u in state.user_store.list_users().await.iter() {
         let db_count = state.db_manager.list_databases(Some(&u.username)).len();
         let api_key = if u.api_key.is_empty() {
-            state.user_store.ensure_api_key(&u.username).await.unwrap_or_default()
+            state
+                .user_store
+                .ensure_api_key(&u.username)
+                .await
+                .unwrap_or_default()
         } else {
             u.api_key.clone()
         };
-        result.push(ClientUserInfo { id: u.id.clone(), username: u.username.clone(), plan: u.plan.clone(), created_at: u.created_at.clone(), api_key, database_count: db_count });
+        result.push(ClientUserInfo {
+            id: u.id.clone(),
+            username: u.username.clone(),
+            plan: u.plan.clone(),
+            created_at: u.created_at.clone(),
+            api_key,
+            database_count: db_count,
+        });
     }
     result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     Ok(Json(result))
@@ -165,13 +326,31 @@ async fn rotate_user_api_key(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     if claims.typ != "admin" {
-        return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin only".into(), code: "FORBIDDEN".into() })));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Admin only".into(),
+                code: "FORBIDDEN".into(),
+            }),
+        ));
     }
     let key = crate::auth::generate_api_key();
-    state.user_store.set_api_key(&username, &key).await.map_err(|e| {
-        (StatusCode::NOT_FOUND, Json(ErrorResponse { error: e, code: "NOT_FOUND".into() }))
-    })?;
-    Ok(Json(serde_json::json!({ "username": username, "api_key": key })))
+    state
+        .user_store
+        .set_api_key(&username, &key)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: e,
+                    code: "NOT_FOUND".into(),
+                }),
+            )
+        })?;
+    Ok(Json(
+        serde_json::json!({ "username": username, "api_key": key }),
+    ))
 }
 
 async fn current_user(
@@ -201,10 +380,23 @@ async fn delete_user(
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     authenticate_admin(&headers)?;
     if is_admin(&username) {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Cannot delete admin".into(), code: "USER_ERROR".into() })));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Cannot delete admin".into(),
+                code: "USER_ERROR".into(),
+            }),
+        ));
     }
-    state.user_store.delete_user(&username).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
+    state.user_store.delete_user(&username).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e,
+                code: "USER_ERROR".into(),
+            }),
+        )
+    })?;
     let dbs = state.db_manager.list_databases(Some(&username));
     for (id, _) in dbs {
         let _ = state.db_manager.delete_database(&id).await;
@@ -220,13 +412,32 @@ async fn set_user_plan(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     authenticate_admin(&headers)?;
     if is_admin(&username) {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Cannot change admin plan".into(), code: "USER_ERROR".into() })));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Cannot change admin plan".into(),
+                code: "USER_ERROR".into(),
+            }),
+        ));
     }
     let plan = Plan::from_str(&payload.plan);
-    let user = state.user_store.set_plan(&username, plan.as_str()).await
-        .map_err(|e| (StatusCode::NOT_FOUND, Json(ErrorResponse { error: e, code: "USER_ERROR".into() })))?;
+    let user = state
+        .user_store
+        .set_plan(&username, plan.as_str())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: e,
+                    code: "USER_ERROR".into(),
+                }),
+            )
+        })?;
     tracing::info!("Set plan {} for user {}", plan.as_str(), username);
-    Ok(Json(serde_json::json!({"username": user.username, "plan": user.plan})))
+    Ok(Json(
+        serde_json::json!({"username": user.username, "plan": user.plan}),
+    ))
 }
 
 async fn list_databases(
@@ -236,11 +447,23 @@ async fn list_databases(
     let claims = authenticate(&headers)?;
     state.query_tracker.track_query(&claims.sub);
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
-    let owner = if claims.typ == "admin" { None } else { Some(claims.sub.as_str()) };
+    let owner = if claims.typ == "admin" {
+        None
+    } else {
+        Some(claims.sub.as_str())
+    };
     let databases = state.db_manager.list_databases(owner);
-    Ok(Json(databases.into_iter().map(|(id, entry)| DatabaseResponse {
-        id, name: entry.name, owner: entry.owner, created_at: entry.created_at,
-    }).collect()))
+    Ok(Json(
+        databases
+            .into_iter()
+            .map(|(id, entry)| DatabaseResponse {
+                id,
+                name: entry.name,
+                owner: entry.owner,
+                created_at: entry.created_at,
+            })
+            .collect(),
+    ))
 }
 
 async fn create_database(
@@ -257,16 +480,39 @@ async fn create_database(
     let user_db_count = state.db_manager.list_databases(Some(owner)).len();
     let max_for_user = plan.max_databases();
     if user_db_count >= max_for_user {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: format!("Maximum databases ({}) reached for your {} plan", max_for_user, plan.as_str()),
-            code: "LIMIT_REACHED".into(),
-        })));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Maximum databases ({}) reached for your {} plan",
+                    max_for_user,
+                    plan.as_str()
+                ),
+                code: "LIMIT_REACHED".into(),
+            }),
+        ));
     }
 
-    let (id, entry) = state.db_manager.create_database(&payload.name, owner).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "CREATE_ERROR".into() })))?;
+    let (id, entry) = state
+        .db_manager
+        .create_database(&payload.name, owner)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                    code: "CREATE_ERROR".into(),
+                }),
+            )
+        })?;
 
-    Ok(Json(DatabaseResponse { id, name: entry.name, owner: entry.owner, created_at: entry.created_at }))
+    Ok(Json(DatabaseResponse {
+        id,
+        name: entry.name,
+        owner: entry.owner,
+        created_at: entry.created_at,
+    }))
 }
 
 async fn get_database(
@@ -276,9 +522,21 @@ async fn get_database(
 ) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
-    let (_, entry) = state.db_manager.get_database(&id).await
-        .map_err(|_| (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Database not found".into(), code: "NOT_FOUND".into() })))?;
-    Ok(Json(DatabaseResponse { id, name: entry.name, owner: entry.owner, created_at: entry.created_at }))
+    let (_, entry) = state.db_manager.get_database(&id).await.map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Database not found".into(),
+                code: "NOT_FOUND".into(),
+            }),
+        )
+    })?;
+    Ok(Json(DatabaseResponse {
+        id,
+        name: entry.name,
+        owner: entry.owner,
+        created_at: entry.created_at,
+    }))
 }
 
 async fn delete_database(
@@ -288,8 +546,15 @@ async fn delete_database(
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
-    state.db_manager.delete_database(&id).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "DELETE_ERROR".into() })))?;
+    state.db_manager.delete_database(&id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+                code: "DELETE_ERROR".into(),
+            }),
+        )
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -303,9 +568,23 @@ async fn execute_query(
     state.query_tracker.track_query(&claims.sub);
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
-    let result = state.db_manager.execute(&id, &payload.sql).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "EXECUTE_ERROR".into() })))?;
-    Ok(Json(ExecuteResponse { success: true, message: result }))
+    let result = state
+        .db_manager
+        .execute(&id, &payload.sql)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                    code: "EXECUTE_ERROR".into(),
+                }),
+            )
+        })?;
+    Ok(Json(ExecuteResponse {
+        success: true,
+        message: result,
+    }))
 }
 
 async fn run_query(
@@ -318,9 +597,19 @@ async fn run_query(
     state.query_tracker.track_query(&claims.sub);
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
-    let rows = state.db_manager.query(&id, &payload.sql).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "QUERY_ERROR".into() })))?;
-    let columns = if !rows.is_empty() { (0..rows[0].len()).map(|i| format!("column_{}", i)).collect() } else { vec![] };
+    let (columns, rows) = state
+        .db_manager
+        .query_with_columns(&id, &payload.sql)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                    code: "QUERY_ERROR".into(),
+                }),
+            )
+        })?;
     Ok(Json(QueryResponse { columns, rows }))
 }
 
@@ -336,8 +625,19 @@ async fn setup_database(
         (id.clone(), entry.name.clone())
     } else {
         let name = format!("{}-hub", owner);
-        let (id, entry) = state.db_manager.create_database(&name, owner).await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "SETUP_ERROR".into() })))?;
+        let (id, entry) = state
+            .db_manager
+            .create_database(&name, owner)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                        code: "SETUP_ERROR".into(),
+                    }),
+                )
+            })?;
         (id, entry.name)
     };
 
@@ -346,12 +646,27 @@ async fn setup_database(
         "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'pending', created_at TEXT DEFAULT (datetime('now')))",
     ];
     for sql in &schema {
-        state.db_manager.execute(&db_id, sql).await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: e.to_string(), code: "SETUP_ERROR".into() })))?;
+        state.db_manager.execute(&db_id, sql).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                    code: "SETUP_ERROR".into(),
+                }),
+            )
+        })?;
     }
 
-    let seeded = state.db_manager.query(&db_id, "SELECT COUNT(*) as c FROM projects").await
-        .map(|rows| rows.first().and_then(|r| r.first()).map(|c| c != "0").unwrap_or(false))
+    let seeded = state
+        .db_manager
+        .query(&db_id, "SELECT COUNT(*) as c FROM projects")
+        .await
+        .map(|rows| {
+            rows.first()
+                .and_then(|r| r.first())
+                .map(|c| c != "0")
+                .unwrap_or(false)
+        })
         .unwrap_or(false);
 
     if !seeded {
@@ -368,9 +683,7 @@ async fn setup_database(
     }))
 }
 
-async fn rate_limit_info(
-    state: State<AppState>,
-) -> Json<RateLimitInfo> {
+async fn rate_limit_info(state: State<AppState>) -> Json<RateLimitInfo> {
     Json(RateLimitInfo {
         remaining: state.rate_limiter.max_requests(),
         limit: state.rate_limiter.max_requests(),
@@ -380,28 +693,77 @@ async fn rate_limit_info(
 
 fn authenticate(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
     let config = Config::load().expect("Failed to load config");
-    let auth_header = headers.get("authorization").and_then(|v| v.to_str().ok())
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Missing authorization header".into(), code: "UNAUTHORIZED".into() })))?;
-    let token = extract_token_from_header(auth_header)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid authorization format".into(), code: "UNAUTHORIZED".into() })))?;
-    verify_token(&token, &config.jwt_secret)
-        .map_err(|_| (StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Invalid or expired token".into(), code: "UNAUTHORIZED".into() })))
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Missing authorization header".into(),
+                    code: "UNAUTHORIZED".into(),
+                }),
+            )
+        })?;
+    let token = extract_token_from_header(auth_header).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Invalid authorization format".into(),
+                code: "UNAUTHORIZED".into(),
+            }),
+        )
+    })?;
+    verify_token(&token, &config.jwt_secret).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Invalid or expired token".into(),
+                code: "UNAUTHORIZED".into(),
+            }),
+        )
+    })
 }
 
 fn authenticate_admin(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(headers)?;
     if claims.typ != "admin" {
-        return Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Admin access required".into(), code: "FORBIDDEN".into() })));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Admin access required".into(),
+                code: "FORBIDDEN".into(),
+            }),
+        ));
     }
     Ok(claims)
 }
 
-fn check_db_owner(state: &AppState, db_id: &str, user: &str, user_type: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if user_type == "admin" { return Ok(()); }
+fn check_db_owner(
+    state: &AppState,
+    db_id: &str,
+    user: &str,
+    user_type: &str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if user_type == "admin" {
+        return Ok(());
+    }
     match state.db_manager.get_db_owner(db_id) {
         Some(owner) if owner == user => Ok(()),
-        Some(_) => Err((StatusCode::FORBIDDEN, Json(ErrorResponse { error: "Not your database".into(), code: "FORBIDDEN".into() }))),
-        None => Err((StatusCode::NOT_FOUND, Json(ErrorResponse { error: "Database not found".into(), code: "NOT_FOUND".into() }))),
+        Some(_) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Not your database".into(),
+                code: "FORBIDDEN".into(),
+            }),
+        )),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Database not found".into(),
+                code: "NOT_FOUND".into(),
+            }),
+        )),
     }
 }
 
@@ -412,7 +774,11 @@ async fn analytics_handler(
 ) -> Result<Json<AnalyticsResponse>, (StatusCode, Json<ErrorResponse>)> {
     let claims = authenticate(&headers)?;
     let is_admin = claims.typ == "admin";
-    let filter_user: Option<&str> = if is_admin { params.get("user").map(|s| s.as_str()) } else { None };
+    let filter_user: Option<&str> = if is_admin {
+        params.get("user").map(|s| s.as_str())
+    } else {
+        None
+    };
 
     let (total_queries, database_count, user_count) = if let Some(user) = filter_user {
         let dbs = state.db_manager.list_databases(Some(user));
@@ -434,24 +800,35 @@ async fn analytics_handler(
         state.query_tracker.get_volume(&claims.sub)
     };
 
-    let volume: Vec<VolumePoint> = volume_raw.into_iter().map(|(ts, count)| VolumePoint { timestamp: ts, count }).collect();
+    let volume: Vec<VolumePoint> = volume_raw
+        .into_iter()
+        .map(|(ts, count)| VolumePoint {
+            timestamp: ts,
+            count,
+        })
+        .collect();
 
     let per_user = if is_admin && filter_user.is_none() {
-        let mut entries: Vec<UserTotalsEntry> = state.query_tracker.list_user_totals()
+        let mut entries: Vec<UserTotalsEntry> = state
+            .query_tracker
+            .list_user_totals()
             .into_iter()
-            .map(|(username, total_queries)| UserTotalsEntry { username, total_queries })
+            .map(|(username, total_queries)| UserTotalsEntry {
+                username,
+                total_queries,
+            })
             .collect();
-        entries.sort_by(|a, b| b.total_queries.cmp(&a.total_queries));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.total_queries));
         entries
     } else {
         Vec::new()
     };
 
-    Ok(Json(AnalyticsResponse { total_queries, database_count, user_count, volume, per_user }))
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct GoogleTokenRequest {
-    pub email: String,
-    pub name: String,
+    Ok(Json(AnalyticsResponse {
+        total_queries,
+        database_count,
+        user_count,
+        volume,
+        per_user,
+    }))
 }

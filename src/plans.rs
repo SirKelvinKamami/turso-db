@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Plan {
+    #[default]
     Free,
     Starter,
     Pro,
@@ -28,6 +29,7 @@ impl Plan {
         }
     }
 
+    #[allow(dead_code)]
     pub fn price_monthly(&self) -> u64 {
         match self {
             Plan::Free => 0,
@@ -55,6 +57,7 @@ impl Plan {
         }
     }
 
+    #[allow(dead_code)]
     pub fn storage_gb(&self) -> u64 {
         match self {
             Plan::Free => 1,
@@ -62,11 +65,5 @@ impl Plan {
             Plan::Pro => 20,
             Plan::Enterprise => 100,
         }
-    }
-}
-
-impl Default for Plan {
-    fn default() -> Self {
-        Plan::Free
     }
 }

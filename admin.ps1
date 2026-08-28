@@ -1,5 +1,6 @@
-# NEXUS SYNTHEX - Turso Database Admin
+# Turso Database Admin
 # Run this to manage your databases
+# Reads credentials from .env — never hardcode passwords.
 
 param(
     [string]$Action = "help",
@@ -9,13 +10,31 @@ param(
 $API_URL = "https://turso-db-8svn.onrender.com"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "NEXUS SYNTHEX - Database Admin" -ForegroundColor Cyan
+Write-Host "Turso Database Admin" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Load admin credentials from .env
+function Get-EnvValue {
+    param([string]$Key)
+    if (-not (Test-Path ".env")) { return $null }
+    (Get-Content ".env" | Where-Object { $_ -match "^$Key=" } | ForEach-Object {
+        $_ -replace "^$Key=", "" -replace '^"|"$', ''
+    }) | Select-Object -First 1
+}
+
+$AdminUser = Get-EnvValue "ADMIN_USERNAME"
+if (-not $AdminUser) { $AdminUser = "admin" }
+$AdminPass = Get-EnvValue "ADMIN_PASSWORD"
+if (-not $AdminPass) {
+    Write-Host "[ERROR] ADMIN_PASSWORD not found in .env" -ForegroundColor Red
+    exit 1
+}
+
 # Login function
 function Get-AdminToken {
-    $login = Invoke-RestMethod -Uri "$API_URL/v1/auth/login" -Method Post -ContentType "application/json" -Body '{"username":"admin","password":"REDACTED"}'
+    $body = @{ username = $AdminUser; password = $AdminPass } | ConvertTo-Json
+    $login = Invoke-RestMethod -Uri "$API_URL/v1/auth/login" -Method Post -ContentType "application/json" -Body $body
     return $login.token
 }
 
@@ -25,18 +44,14 @@ switch ($Action) {
     "list" {
         Write-Host "Your Databases:" -ForegroundColor Green
         $dbs = Invoke-RestMethod -Uri "$API_URL/v1/databases" -Method Get -Headers @{Authorization="Bearer $token"}
-        if ($dbs.databases) {
-            $dbs.databases | ForEach-Object {
-                Write-Host "  - $($_.name)" -ForegroundColor White
-                Write-Host "    ID: $($_.id)" -ForegroundColor Gray
-                Write-Host "    Owner: $($_.owner)" -ForegroundColor Gray
-                Write-Host ""
-            }
-        } else {
-            Write-Host "  No databases found" -ForegroundColor Yellow
+        $dbs | ForEach-Object {
+            Write-Host "  - $($_.name)" -ForegroundColor White
+            Write-Host "    ID: $($_.id)" -ForegroundColor Gray
+            Write-Host "    Owner: $($_.owner)" -ForegroundColor Gray
+            Write-Host ""
         }
     }
-    
+
     "create" {
         if (-not $DatabaseName) {
             Write-Host "Usage: .\admin.ps1 -Action create -DatabaseName 'my-db'" -ForegroundColor Red
@@ -48,7 +63,7 @@ switch ($Action) {
         Write-Host "  ID: $($newDb.id)" -ForegroundColor White
         Write-Host "  Name: $($newDb.name)" -ForegroundColor White
     }
-    
+
     "query" {
         if (-not $DatabaseName) {
             Write-Host "Usage: .\admin.ps1 -Action query -DatabaseName 'das-hub'" -ForegroundColor Red
@@ -66,7 +81,7 @@ switch ($Action) {
         Write-Host "Tables:" -ForegroundColor Green
         $result.rows | ForEach-Object { Write-Host "  - $($_[0])" -ForegroundColor White }
     }
-    
+
     "users" {
         Write-Host "Registered Users:" -ForegroundColor Green
         $dbs = Invoke-RestMethod -Uri "$API_URL/v1/databases" -Method Get -Headers @{Authorization="Bearer $token"}
@@ -82,16 +97,14 @@ switch ($Action) {
             }
         }
     }
-    
+
     "help" {
         Write-Host "Commands:" -ForegroundColor Yellow
-        Write-Host "  .\admin.ps1 -Action list                    List all databases" -ForegroundColor White
-        Write-Host "  .\admin.ps1 -Action create -DatabaseName 'name'  Create new database" -ForegroundColor White
-        Write-Host "  .\admin.ps1 -Action query -DatabaseName 'name'   Show tables in database" -ForegroundColor White
-        Write-Host "  .\admin.ps1 -Action users                    Show users in das-hub" -ForegroundColor White
+        Write-Host "  .\admin.ps1 -Action list                              List all databases" -ForegroundColor White
+        Write-Host "  .\admin.ps1 -Action create -DatabaseName 'name'       Create new database" -ForegroundColor White
+        Write-Host "  .\admin.ps1 -Action query -DatabaseName 'name'        Show tables in database" -ForegroundColor White
+        Write-Host "  .\admin.ps1 -Action users                             Show users in das-hub" -ForegroundColor White
         Write-Host ""
-        Write-Host "Credentials:" -ForegroundColor Yellow
-        Write-Host "  Admin: admin / REDACTED" -ForegroundColor White
-        Write-Host "  User: das-creatives / REDACTED" -ForegroundColor White
+        Write-Host "Credentials are read from .env" -ForegroundColor Yellow
     }
 }

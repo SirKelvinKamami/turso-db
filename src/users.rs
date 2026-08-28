@@ -1,5 +1,7 @@
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use argon2::password_hash::{
+    PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
+};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -51,9 +53,21 @@ impl UserStore {
             id: v.get("id")?.as_str()?.to_string(),
             username: v.get("username")?.as_str()?.to_string(),
             password_hash: v.get("password_hash")?.as_str()?.to_string(),
-            plan: v.get("plan").and_then(|p| p.as_str()).unwrap_or("free").to_string(),
-            api_key: v.get("api_key").and_then(|k| k.as_str()).unwrap_or("").to_string(),
-            created_at: v.get("created_at").and_then(|c| c.as_str()).unwrap_or("").to_string(),
+            plan: v
+                .get("plan")
+                .and_then(|p| p.as_str())
+                .unwrap_or("free")
+                .to_string(),
+            api_key: v
+                .get("api_key")
+                .and_then(|k| k.as_str())
+                .unwrap_or("")
+                .to_string(),
+            created_at: v
+                .get("created_at")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -61,11 +75,17 @@ impl UserStore {
         if key.is_empty() {
             return None;
         }
-        self.list_users().await.into_iter().find(|u| u.api_key == key)
+        self.list_users()
+            .await
+            .into_iter()
+            .find(|u| u.api_key == key)
     }
 
     pub async fn ensure_api_key(&self, username: &str) -> Result<String, String> {
-        let user = self.get_user(username).await.ok_or_else(|| "User not found".to_string())?;
+        let user = self
+            .get_user(username)
+            .await
+            .ok_or_else(|| "User not found".to_string())?;
         if !user.api_key.is_empty() {
             return Ok(user.api_key);
         }
@@ -76,7 +96,12 @@ impl UserStore {
 
     pub async fn set_api_key(&self, username: &str, key: &str) -> Result<(), String> {
         if let Some(sb) = &self.supabase {
-            sb.update("turso_users", &format!("username=eq.{}", username), serde_json::json!({ "api_key": key })).await
+            sb.update(
+                "turso_users",
+                &format!("username=eq.{}", username),
+                serde_json::json!({ "api_key": key }),
+            )
+            .await
         } else {
             if let Some(mut u) = self.mem.get_mut(username) {
                 u.api_key = key.to_string();
@@ -87,7 +112,10 @@ impl UserStore {
 
     pub async fn get_user(&self, username: &str) -> Option<User> {
         if let Some(sb) = &self.supabase {
-            let rows = sb.rows("turso_users", &format!("&username=eq.{}", username)).await.ok()?;
+            let rows = sb
+                .rows("turso_users", &format!("&username=eq.{}", username))
+                .await
+                .ok()?;
             rows.first().and_then(Self::from_row)
         } else {
             self.mem.get(username).map(|u| u.clone())
@@ -96,7 +124,8 @@ impl UserStore {
 
     pub async fn list_users(&self) -> Vec<User> {
         if let Some(sb) = &self.supabase {
-            sb.rows("turso_users", "").await
+            sb.rows("turso_users", "")
+                .await
                 .map(|rows| rows.iter().filter_map(Self::from_row).collect())
                 .unwrap_or_default()
         } else {
@@ -148,10 +177,20 @@ impl UserStore {
         let plan = Plan::from_str(plan);
         if let Some(sb) = &self.supabase {
             let filter = format!("username=eq.{}", username);
-            sb.update("turso_users", &filter, serde_json::json!({ "plan": plan.as_str() })).await?;
-            self.get_user(username).await.ok_or_else(|| "User not found".to_string())
+            sb.update(
+                "turso_users",
+                &filter,
+                serde_json::json!({ "plan": plan.as_str() }),
+            )
+            .await?;
+            self.get_user(username)
+                .await
+                .ok_or_else(|| "User not found".to_string())
         } else {
-            let mut user = self.mem.get_mut(username).ok_or_else(|| "User not found".to_string())?;
+            let mut user = self
+                .mem
+                .get_mut(username)
+                .ok_or_else(|| "User not found".to_string())?;
             user.plan = plan.as_str().to_string();
             Ok(user.clone())
         }
@@ -159,7 +198,8 @@ impl UserStore {
 
     pub async fn delete_user(&self, username: &str) -> Result<(), String> {
         if let Some(sb) = &self.supabase {
-            sb.delete("turso_users", &format!("username=eq.{}", username)).await
+            sb.delete("turso_users", &format!("username=eq.{}", username))
+                .await
         } else {
             self.mem.remove(username);
             Ok(())
@@ -167,7 +207,10 @@ impl UserStore {
     }
 
     pub async fn verify_password(&self, username: &str, password: &str) -> Result<User, String> {
-        let user = self.get_user(username).await.ok_or_else(|| "User not found".to_string())?;
+        let user = self
+            .get_user(username)
+            .await
+            .ok_or_else(|| "User not found".to_string())?;
         let parsed_hash = PasswordHash::new(&user.password_hash).map_err(|e| e.to_string())?;
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed_hash)

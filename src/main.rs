@@ -2,6 +2,7 @@ mod analytics;
 mod auth;
 mod config;
 mod db;
+mod google;
 mod libsql;
 mod models;
 mod plans;
@@ -10,27 +11,29 @@ mod routes;
 mod supabase;
 mod users;
 
-use std::sync::Arc;
 use axum::{Router, response::Redirect, routing::get};
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
 use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::analytics::QueryTracker;
 use crate::config::Config;
 use crate::db::DatabaseManager;
+use crate::ratelimit::RateLimiter;
 use crate::supabase::Supabase;
 use crate::users::UserStore;
-use crate::ratelimit::RateLimiter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load()?;
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "turso_service=info,tower_http=info".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "turso_service=info,tower_http=info".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -63,7 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         query_tracker.load_from_supabase().await;
         let tracker = query_tracker.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(analytics::FLUSH_INTERVAL_SECS));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                analytics::FLUSH_INTERVAL_SECS,
+            ));
             loop {
                 interval.tick().await;
                 let flushed = tracker.flush().await;
@@ -75,8 +80,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let app = Router::new()
-        .route("/dashboard", get(|| async { Redirect::permanent("/dashboard.html") }))
-        .nest("/v1", routes::api_routes(db_manager.clone(), (*user_store_arc).clone(), rate_limiter, query_tracker))
+        .route(
+            "/dashboard",
+            get(|| async { Redirect::permanent("/dashboard.html") }),
+        )
+        .nest(
+            "/v1",
+            routes::api_routes(
+                db_manager.clone(),
+                (*user_store_arc).clone(),
+                rate_limiter,
+                query_tracker,
+            ),
+        )
         .fallback_service(ServeDir::new("static"))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());

@@ -77,7 +77,7 @@ class TursoClient {
 const client = new TursoClient();
 
 // Login
-await client.login('das-creatives', 'REDACTED');
+await client.login('my-username', 'my-password');
 
 // List databases
 const dbs = await client.listDatabases();

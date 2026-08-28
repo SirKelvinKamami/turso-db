@@ -1,7 +1,7 @@
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -72,7 +72,8 @@ impl QueryTracker {
                 Err(e) => {
                     tracing::warn!("Analytics load attempt {}/{} failed: {}", attempt, 5, e);
                     if attempt < 5 {
-                        tokio::time::sleep(std::time::Duration::from_secs(5 * attempt as u64)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(5 * attempt as u64))
+                            .await;
                     }
                 }
             }
@@ -83,10 +84,13 @@ impl QueryTracker {
                 let total = row.get("total_queries").and_then(json_to_u64).unwrap_or(0);
                 *self.totals.entry(username.to_string()).or_insert(0) = total;
                 if let Some(vol) = row.get("volume").and_then(|v| v.as_array()) {
-                    let mut points: Vec<(i64, u64)> = vol.iter().filter_map(|p| {
-                        let arr = p.as_array()?;
-                        Some((arr.first()?.as_i64()?, arr.get(1)?.as_u64()?))
-                    }).collect();
+                    let mut points: Vec<(i64, u64)> = vol
+                        .iter()
+                        .filter_map(|p| {
+                            let arr = p.as_array()?;
+                            Some((arr.first()?.as_i64()?, arr.get(1)?.as_u64()?))
+                        })
+                        .collect();
                     prune_points(&mut points, cutoff);
                     self.volume.insert(username.to_string(), points);
                 }
@@ -171,7 +175,10 @@ impl QueryTracker {
     }
 
     pub fn get_volume(&self, username: &str) -> Vec<(i64, u64)> {
-        self.volume.get(username).map(|e| e.value().clone()).unwrap_or_default()
+        self.volume
+            .get(username)
+            .map(|e| e.value().clone())
+            .unwrap_or_default()
     }
 
     pub fn get_volume_all(&self) -> Vec<(i64, u64)> {
@@ -187,7 +194,10 @@ impl QueryTracker {
     }
 
     pub fn list_user_totals(&self) -> Vec<(String, u64)> {
-        self.totals.iter().map(|e| (e.key().clone(), *e.value())).collect()
+        self.totals
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect()
     }
 }
 

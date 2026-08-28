@@ -10,20 +10,22 @@ services:
         value: "0.0.0.0:10000"
       - key: DATA_DIR
         value: "/data"
+      # Secrets are set in the Render dashboard (Sync: false).
+      # Passwords/secrets must NOT be committed to this file.
       - key: JWT_SECRET
-        value: "REDACTED"
+        sync: false
       - key: JWT_EXPIRY_HOURS
         value: "24"
       - key: ADMIN_USERNAME
         value: "admin"
       - key: ADMIN_PASSWORD
-        value: "REDACTED"
+        sync: false
       - key: RUST_LOG
         value: "turso_service=info"
       - key: ANALYTICS_RETENTION_HOURS
         value: "168"
       - key: SEED_USERS
-        value: "das-creatives:REDACTED"
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
