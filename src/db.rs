@@ -7,6 +7,23 @@ use uuid::Uuid;
 
 use crate::supabase::Supabase;
 
+/// True when the statement is read-only (SELECT/WITH/PRAGMA/EXPLAIN/VALUES).
+pub(crate) fn sql_is_query(sql: &str) -> bool {
+    let head = sql.trim_start().to_ascii_lowercase();
+    head.starts_with("select")
+        || head.starts_with("with")
+        || head.starts_with("pragma")
+        || head.starts_with("explain")
+        || head.starts_with("values")
+}
+
+/// Result of an executed write batch.
+#[derive(Debug, Clone)]
+pub struct ExecuteReport {
+    pub statements: Vec<String>,
+    pub rows_affected: u64,
+}
+
 fn value_to_string(value: turso::Value) -> String {
     match value {
         turso::Value::Null => "NULL".to_string(),
@@ -19,7 +36,7 @@ fn value_to_string(value: turso::Value) -> String {
 
 /// Splits SQL text into individual statements on top-level semicolons, keeping
 /// semicolons inside string literals, quoted identifiers, and comments intact.
-fn split_sql(sql: &str) -> Vec<String> {
+pub(crate) fn split_sql(sql: &str) -> Vec<String> {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Mode {
         Normal,
@@ -442,27 +459,28 @@ impl DatabaseManager {
         &self,
         db_id: &str,
         sql: &str,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<ExecuteReport, Box<dyn std::error::Error>> {
         let (db, entry) = self.get_database(db_id).await?;
         let conn = db.connect()?;
-        let statements = split_sql(sql);
+        let statements: Vec<String> = split_sql(sql)
+            .into_iter()
+            .filter(|s| !sql_is_query(s))
+            .collect();
         if statements.is_empty() {
-            return Ok("0 rows affected".to_string());
+            return Ok(ExecuteReport {
+                statements,
+                rows_affected: 0,
+            });
         }
         let mut total: u64 = 0;
         for stmt in &statements {
             total += conn.execute(stmt, ()).await?;
         }
         let _ = self.persist_db(db_id, &entry.owner).await;
-        if statements.len() == 1 {
-            Ok(format!("{} rows affected", total))
-        } else {
-            Ok(format!(
-                "ran {} statements, {} rows affected",
-                statements.len(),
-                total
-            ))
-        }
+        Ok(ExecuteReport {
+            statements,
+            rows_affected: total,
+        })
     }
 
     pub async fn query_with_columns(
@@ -532,12 +550,7 @@ impl DatabaseManager {
         let (db, entry) = self.get_database(db_id).await?;
         let conn = db.connect()?;
 
-        let head = sql.trim_start().to_ascii_lowercase();
-        let is_query = head.starts_with("select")
-            || head.starts_with("with")
-            || head.starts_with("pragma")
-            || head.starts_with("explain")
-            || head.starts_with("values");
+        let is_query = sql_is_query(sql);
 
         let mut cols: Vec<(String, Option<String>)> = Vec::new();
         let mut rows_out: Vec<Vec<turso::Value>> = Vec::new();

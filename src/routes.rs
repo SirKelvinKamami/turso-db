@@ -15,6 +15,7 @@ use crate::models::*;
 use crate::plans::Plan;
 use crate::ratelimit::RateLimiter;
 use crate::users::UserStore;
+use crate::webhooks::{EVENT_WRITE, WebhookStore};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -22,6 +23,7 @@ pub struct AppState {
     pub user_store: UserStore,
     pub rate_limiter: RateLimiter,
     pub query_tracker: QueryTracker,
+    pub webhooks: WebhookStore,
 }
 
 pub fn api_routes(
@@ -29,12 +31,14 @@ pub fn api_routes(
     user_store: UserStore,
     rate_limiter: RateLimiter,
     query_tracker: QueryTracker,
+    webhooks: WebhookStore,
 ) -> Router {
     let state = AppState {
         db_manager,
         user_store,
         rate_limiter,
         query_tracker,
+        webhooks,
     };
 
     Router::new()
@@ -51,6 +55,11 @@ pub fn api_routes(
         .route("/databases/{id}", get(get_database).delete(delete_database))
         .route("/databases/{id}/execute", post(execute_query))
         .route("/databases/{id}/query", post(run_query))
+        .route(
+            "/databases/{id}/webhooks",
+            get(list_webhooks).post(create_webhook),
+        )
+        .route("/databases/{id}/webhooks/{hook_id}", delete(delete_webhook))
         .route("/setup", post(setup_database))
         .route("/rate-limit", get(rate_limit_info))
         .route("/analytics", get(analytics_handler))
@@ -555,7 +564,88 @@ async fn delete_database(
             }),
         )
     })?;
+    state.webhooks.remove_all(&id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn create_webhook(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(payload): Json<CreateWebhookRequest>,
+) -> Result<(StatusCode, Json<WebhookResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    state.db_manager.get_database(&id).await.map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Database not found".into(),
+                code: "NOT_FOUND".into(),
+            }),
+        )
+    })?;
+    let hook = state
+        .webhooks
+        .add(&id, &payload.url, payload.secret, payload.events)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e,
+                    code: "INVALID_WEBHOOK".into(),
+                }),
+            )
+        })?;
+    Ok((
+        StatusCode::CREATED,
+        Json(WebhookResponse {
+            id: hook.id,
+            url: hook.url,
+            events: hook.events,
+            created_at: hook.created_at,
+        }),
+    ))
+}
+
+async fn list_webhooks(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<WebhookResponse>>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    let hooks = state.webhooks.list(&id);
+    let resp = hooks
+        .iter()
+        .map(|h| WebhookResponse {
+            id: h.id.clone(),
+            url: h.url.clone(),
+            events: h.events.clone(),
+            created_at: h.created_at.clone(),
+        })
+        .collect();
+    Ok(Json(resp))
+}
+
+async fn delete_webhook(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path((id, hook_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    if state.webhooks.remove(&id, &hook_id) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Webhook not found".into(),
+                code: "NOT_FOUND".into(),
+            }),
+        ))
+    }
 }
 
 async fn execute_query(
@@ -568,7 +658,7 @@ async fn execute_query(
     state.query_tracker.track_query(&claims.sub);
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
-    let result = state
+    let report = state
         .db_manager
         .execute(&id, &payload.sql)
         .await
@@ -581,10 +671,36 @@ async fn execute_query(
                 }),
             )
         })?;
+    dispatch_webhooks(&state, &id, &report).await;
+    let message = match report.statements.len() {
+        0 => "0 rows affected".to_string(),
+        1 => format!("{} rows affected", report.rows_affected),
+        n => format!(
+            "ran {} statements, {} rows affected",
+            n, report.rows_affected
+        ),
+    };
     Ok(Json(ExecuteResponse {
         success: true,
-        message: result,
+        message,
     }))
+}
+
+async fn dispatch_webhooks(state: &AppState, db_id: &str, report: &crate::db::ExecuteReport) {
+    if report.statements.is_empty() || state.webhooks.list(db_id).is_empty() {
+        return;
+    }
+    let Ok((_, entry)) = state.db_manager.get_database(db_id).await else {
+        return;
+    };
+    state.webhooks.dispatch(
+        db_id,
+        &entry.name,
+        &entry.owner,
+        EVENT_WRITE,
+        report.statements.clone(),
+        report.rows_affected,
+    );
 }
 
 async fn run_query(

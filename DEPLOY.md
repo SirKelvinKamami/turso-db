@@ -72,6 +72,9 @@ Invoke-RestMethod -Uri "http://localhost:3000/v1/databases/$($db.id)/query" -Met
 | DELETE | `/v1/databases/{id}` | Delete database |
 | POST | `/v1/databases/{id}/execute` | Execute SQL (INSERT/UPDATE/DELETE/CREATE) |
 | POST | `/v1/databases/{id}/query` | Query data (SELECT) with real column names |
+| GET | `/v1/databases/{id}/webhooks` | List webhooks for a database |
+| POST | `/v1/databases/{id}/webhooks` | Register a webhook (`{url, secret?, events?}`) |
+| DELETE | `/v1/databases/{id}/webhooks/{hook_id}` | Remove a webhook |
 | POST | `/v1/setup` | One-click init: db + `projects`/`tasks` schema + seed |
 | GET | `/v1/analytics` | Query volume, totals, per-client breakdown |
 
@@ -82,6 +85,55 @@ Invoke-RestMethod -Uri "http://localhost:3000/v1/databases/$($db.id)/query" -Met
 
 `{db}` matches a database by name or id. Client API keys are issued on account
 creation and can be rotated via the `/v1/users/{username}/api-key` endpoint.
+
+---
+
+## Webhooks (change notifications / push sync)
+
+Register a URL and the service POSTs a JSON payload to it whenever a write
+(`INSERT`/`UPDATE`/`DELETE`/`CREATE`/…) succeeds on that database — through either
+`/execute` or the libsql pipeline. This is also the mechanism for push-style sync:
+point a webhook at another turso-service instance to forward writes.
+
+```powershell
+$headers = @{ Authorization = "Bearer $token" }
+
+# Register (optional secret signs the payload; optional events filter)
+$wh = Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks" -Method Post `
+  -ContentType "application/json" -Headers $headers `
+  -Body '{"url":"https://your-app.example.com/hooks/db-changed","secret":"pick-a-long-random-string"}'
+
+# List / remove
+Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks" -Headers $headers
+Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks/$($wh.id)" -Method Delete -Headers $headers
+```
+
+Delivery details:
+
+- **Timing:** fire-and-forget after the write commits; the HTTP response is not
+  delayed by webhook delivery.
+- **Event:** currently the `write` event (one delivery per write batch; every
+  statement in the batch is listed in the payload). Row-level
+  insert/update/delete granularity is a planned enhancement.
+- **Payload** (JSON, `Content-Type: application/json`):
+  ```json
+  {
+    "event": "write",
+    "schema_version": 1,
+    "delivery_id": "<uuid>",
+    "timestamp": "RFC3339",
+    "database": { "id": "<uuid>", "name": "my-app" },
+    "owner": "admin",
+    "statements": ["INSERT INTO users ..."],
+    "rows_affected": 1
+  }
+  ```
+- **Signature:** if `secret` is set, the request includes
+  `X-Turso-Signature: sha256=<lowercase hex HMAC-SHA256 of the raw body>`.
+  Verify on the receiver side for authenticity.
+- **Headers:** `X-Turso-Event: write`, `X-Turso-Database: <id>`.
+- Webhooks are stored in `DATA_DIR/webhooks.json` and survive restarts. Deleting a
+  database removes its webhooks. Owner-only access (tenant isolation preserved).
 
 ---
 

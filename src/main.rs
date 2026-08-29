@@ -10,6 +10,7 @@ mod ratelimit;
 mod routes;
 mod supabase;
 mod users;
+mod webhooks;
 
 use axum::{Router, response::Redirect, routing::get};
 use std::sync::Arc;
@@ -24,6 +25,7 @@ use crate::db::DatabaseManager;
 use crate::ratelimit::RateLimiter;
 use crate::supabase::Supabase;
 use crate::users::UserStore;
+use crate::webhooks::WebhookStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_store_arc = Arc::new(user_store);
 
     let rate_limiter = RateLimiter::new(config.max_queries_per_minute, 60);
+    let webhook_store = WebhookStore::new(&format!("{}/webhooks.json", config.data_dir));
     let query_tracker = QueryTracker::new(supabase.clone());
     if supabase.is_some() {
         query_tracker.load_from_supabase().await;
@@ -91,6 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (*user_store_arc).clone(),
                 rate_limiter,
                 query_tracker,
+                webhook_store,
             ),
         )
         .fallback_service(ServeDir::new("static"))

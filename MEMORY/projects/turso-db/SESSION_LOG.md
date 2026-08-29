@@ -4,6 +4,65 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-08-29 — Webhook/sync feature (v1.1.0)
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Start the webhook/sync feature: notify external endpoints when data changes in a
+database, and provide the base for push-style sync between turso-service instances.
+
+### What was built
+- **New `src/webhooks.rs`:**
+  - `Webhook { id, url, secret, events, created_at }`, persisted to `DATA_DIR/webhooks.json`
+    (file-backed store, same pattern as the DB manifest; survives restarts).
+  - `WebhookStore::add/list/remove/remove_all`, validation of URLs (http/https) and
+    event tokens (`write`, `*`).
+  - `dispatch()`: fire-and-forget `tokio::spawn` per matching hook (does NOT block the
+    write response); 10s request timeout; headers `X-Turso-Event`, `X-Turso-Database`,
+    and `X-Turso-Signature: sha256=<hex HMAC-SHA256 of raw body>` when a secret is set.
+  - Payload shape: `{ event, schema_version:1, delivery_id, timestamp,
+    database:{id,name}, owner, statements, rows_affected }`.
+- **Write-path wiring (both paths trigger webhooks):**
+  - `POST /v1/databases/{id}/execute` → `DatabaseManager::execute` now returns an
+    `ExecuteReport { statements, rows_affected }` (in `src/db.rs`); route dispatches
+    a `write` webhook for non-empty statements.
+  - libsql pipeline (`POST /v1/libsql/{db}/v2/pipeline`) — accumulates executed
+    write statements across `execute`/`batch` requests and dispatches one webhook
+    per pipeline call.
+  - `split_sql` made `pub(crate)`; new `sql_is_query()` classifier shared by
+    `run_statement` and webhook plumbing (read-only statements never fire webhooks).
+- **Routes:** `GET|POST /v1/databases/{id}/webhooks`, `DELETE /v1/databases/{id}/webhooks/{hook_id}`;
+  owner-only (tenant isolation via `check_db_owner`). DB deletion also clears its webhooks.
+- **Deps:** added `hmac 0.12`, `sha2 0.10`, `hex 0.4`; version bumped `1.0.0 → 1.1.0`.
+- **Docs:** DEPLOY.md webhook section + API table rows.
+
+### Tests (16 total, all pass)
+- New: HMAC known-vector, signature format, event matching, URL/event validation,
+  store file roundtrip, payload shape, and a live loopback delivery test that spins
+  up an axum receiver and asserts signed headers + payload.
+- `cargo fmt --check`, `cargo clippy --all-targets`, `cargo build`, `cargo test` — all clean.
+
+### Manual smoke (localhost:3100)
+Register webhook (201), list (1), invalid URL→400, invalid event→400, multi-statement
+execute fired-and-returned in ~114ms (non-blocking), delete→204, re-delete→404,
+db delete cleared `webhooks.json` to `{}`.
+
+### Notes / limitations (recorded intent)
+- MVP fires one `write` event per write batch (all statements listed in payload).
+  Row-level insert/update/delete detection is a planned enhancement (needs SQL
+  analysis or change capture BEFORE execute).
+- No retry/backoff queue yet — delivery is best-effort fire-and-forget.
+- Supabase-backed webhook persistence not implemented (file-only for now).
+
+### Files changed
+- New: `src/webhooks.rs`
+- Modified: `Cargo.toml`, `Cargo.lock`, `src/main.rs`, `src/routes.rs`, `src/db.rs`,
+  `src/libsql.rs`, `src/models.rs`, `DEPLOY.md`
+- Committed locally (see below).
+
+---
+
 ## 2026-08-28 — Build fix, security pass, real columns, warnings cleanup
 
 **Model/session:** opencode (big-pickle)

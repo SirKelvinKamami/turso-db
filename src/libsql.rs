@@ -8,8 +8,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::auth::extract_token_from_header;
+use crate::db::sql_is_query;
 use crate::plans::Plan;
 use crate::routes::AppState;
+use crate::webhooks::EVENT_WRITE;
 
 #[derive(Deserialize)]
 pub struct PipelineRequest {
@@ -252,6 +254,7 @@ pub async fn pipeline_handler(
     }
 
     let mut results: Vec<Value> = Vec::with_capacity(body.requests.len());
+    let mut writes: Vec<(String, u64)> = Vec::new();
 
     for req in &body.requests {
         match req.kind.as_str() {
@@ -263,7 +266,12 @@ pub async fn pipeline_handler(
                 state.query_tracker.track_query(&user.username);
                 match stmt_params(stmt) {
                     Ok(p) => match state.db_manager.run_statement(&db_id, &stmt.sql, p).await {
-                        Ok((cols, rows, affected)) => results.push(stmt_ok(cols, rows, affected)),
+                        Ok((cols, rows, affected)) => {
+                            if !sql_is_query(&stmt.sql) {
+                                writes.push((stmt.sql.clone(), affected));
+                            }
+                            results.push(stmt_ok(cols, rows, affected))
+                        }
                         Err(e) => results.push(stmt_err(&e.to_string())),
                     },
                     Err(e) => results.push(stmt_err(&e)),
@@ -285,6 +293,9 @@ pub async fn pipeline_handler(
                     match stmt_params(stmt) {
                         Ok(p) => match state.db_manager.run_statement(&db_id, &stmt.sql, p).await {
                             Ok((cols, rows, affected)) => {
+                                if !sql_is_query(&stmt.sql) {
+                                    writes.push((stmt.sql.clone(), affected));
+                                }
                                 step_results.push(stmt_ok(cols, rows, affected))
                             }
                             Err(e) => step_results.push(stmt_err(&e.to_string())),
@@ -305,6 +316,19 @@ pub async fn pipeline_handler(
                 results.push(stmt_err(&format!("unsupported request type '{}'", other)));
             }
         }
+    }
+
+    if !writes.is_empty() {
+        let total: u64 = writes.iter().map(|(_, n)| n).sum();
+        let statements: Vec<String> = writes.into_iter().map(|(s, _)| s).collect();
+        let (db_name, owner) = databases
+            .iter()
+            .find(|(id, _)| *id == db_id)
+            .map(|(_, entry)| (entry.name.clone(), entry.owner.clone()))
+            .unwrap_or_else(|| (db_id.clone(), user.username.clone()));
+        state
+            .webhooks
+            .dispatch(&db_id, &db_name, &owner, EVENT_WRITE, statements, total);
     }
 
     Ok(Json(json!({ "results": results })))

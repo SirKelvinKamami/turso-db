@@ -98,3 +98,20 @@ pub struct RateLimitInfo {
     pub limit: u64,
     pub window_secs: u64,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWebhookRequest {
+    pub url: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub events: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WebhookResponse {
+    pub id: String,
+    pub url: String,
+    pub events: Vec<String>,
+    pub created_at: String,
+}

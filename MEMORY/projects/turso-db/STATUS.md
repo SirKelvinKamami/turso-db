@@ -1,7 +1,7 @@
 # Turso Service — Current Status
 
-**Last Updated:** 2026-08-28
-**Version:** 1.0.0 (working tree has uncommitted changes, version not yet bumped)
+**Last Updated:** 2026-08-29
+**Version:** 1.1.0 (webhook/sync feature; uncommitted until this session's commit)
 
 ---
 
@@ -9,24 +9,23 @@
 
 - Build environment repaired on the dev machine (Windows / windows-gnu).
 - Security pass completed: Google ID-token verification via JWKS, graceful admin-password handling, committed secrets scrubbed.
-- `/query` now returns real column names.
-- `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo build` all pass with zero warnings.
-- No unit/integration tests exist yet (`cargo test` runs 0 tests).
+- `/query` returns real column names; multi-statement `execute`; `delete_database` cleans orphan WAL/shm files.
+- **Webhook/sync feature shipped (v1.1.0):** outbound `write` webhooks with HMAC signing, wired to both `/execute` and the libsql pipeline; CRUD API + file persistence + 16 passing tests.
+- `cargo fmt --check`, `cargo clippy --all-targets`, `cargo build`, `cargo test` — all pass, zero warnings.
 
 ## What Is Uncommitted
 
-All of the below is in the working tree but NOT committed:
+This session's webhook feature is committed locally only (not pushed):
 
-0. Multi-statement `execute`: `split_sql` splits on top-level `;` (string/identifier/comment aware); `execute` runs each statement and reports `ran N statements, X rows affected`. 8 unit tests added (`cargo test` now runs 8, all pass).
-1. New file `src/google.rs` — Google ID token verification against Google JWKS
-   (`https://www.googleapis.com/oauth2/v3/certs`, 1h cache, RS256, issuer + audience checks).
-2. `src/routes.rs` — Google login flow, `GET /v1/auth/google-config`, admin password CONFIG_ERROR instead of panic, real column names in `/query`, analytics/plan handlers.
-3. `src/db.rs` — `value_to_string`, `query_with_columns`, and delete now also removes `-wal`/`-shm` files.
-4. `src/config.rs`, `src/models.rs`, `src/auth.rs`, `src/libsql.rs`, `src/analytics.rs`, `src/users.rs`, `src/plans.rs`, `src/supabase.rs`, `src/main.rs` — warning cleanup + Google config.
-5. `static/dashboard.html` — Google sign-in button wired (`initGoogleSignIn`, `id_token` payload).
-6. Secret scrub: `render.yaml`, `DEPLOY.md`, `admin.ps1`, `static/das-creatives-setup.js`, `static/turso-client.js`, `.env.example`.
-7. `start.ps1` — fixed local build/start on this machine.
-8. Whole-tree `cargo fmt` normalization.
+1. `src/webhooks.rs` — webhook store + dispatch (HMAC signing, fire-and-forget).
+2. `src/routes.rs` — webhook CRUD routes + dispatch from `execute_query`.
+3. `src/libsql.rs` — pipeline accumulates writes and dispatches.
+4. `src/db.rs` — `ExecuteReport`, `pub(crate)` `split_sql`, `sql_is_query`.
+5. `src/models.rs` — `CreateWebhookRequest`, `WebhookResponse`.
+6. `Cargo.toml`/lock — `hmac`, `sha2`, `hex`; version `1.1.0`.
+7. `DEPLOY.md` — webhook docs.
+
+(All of the 2026-08-28 security/columns/lint work and the MEMORY structure are already committed as `bf74f20` + `0974b57`.)
 
 ## Blockers / Decisions Needed
 
@@ -37,15 +36,15 @@ All of the below is in the working tree but NOT committed:
 
 ## Next Feature Candidates
 
-- Webhook / sync feature (user hinted, not yet specified).
+- Row-level insert/update/delete webhook events (SQL analysis / change capture pre-execute).
+- Webhook retry/backoff queue + delivery logs.
+- Supabase-backed webhook persistence.
+- Full libsql HTTP replica sync (proper bidirectional sync, larger effort).
 - More unit tests (admin/plan/rate-limit logic).
-- Extend multi-statement splitting to `/query` (currently execute only).
 
 ## Test Notes
 
-- `cargo test --all-targets` → 8 tests, all pass (new `split_sql` unit tests).
-- Manual smoke test on port 3100 verified: health, google-config, admin login,
-  create db, single-statement execute (create + insert), query returning real
-  column names (`id,first_name,age`) with correct rows, delete.
-- Multi-statement execute verified live: `ran 3 statements, 3 rows affected`,
-  result rows `[1,a;b]`, `[2,c]`, `[3,d]` — semicolons inside string literals preserved.
+- `cargo test --all-targets` → 16 tests, all pass (8 `split_sql` + 8 webhook).
+- Live loopback delivery test proves HMAC signature + headers + payload reach an HTTP target.
+- Manual smoke test verified the webhook CRUD API, validation errors, non-blocking
+  dispatch (~114ms for a 2-statement batch), and cleanup on DB delete.
