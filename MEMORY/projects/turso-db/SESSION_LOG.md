@@ -4,6 +4,76 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-08-31 — Webhooks v1.2.0: retries, row-level events, headers, Supabase mirror, sync receiver (all-of-the-above batch)
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Finish the webhook roadmap: retry/backoff queue, row-level change events, custom
+delivery headers, optional Supabase persistence, a loop-free sync receiver for
+push-based instance replication, a recipient helper script, git history cleanup,
+and push preparation.
+
+### What was built (commit `…` after this entry)
+- **`src/webhooks.rs`:**
+  - Retry/backoff queue: fire-and-forget delivery now retries on failure/non-2xx
+    (`1s/2s/4s/8s`, 5 attempts total), all off the request path.
+  - Per-statement `changes` in the payload: best-effort parser `classify_write`
+    returns `op` (insert/update/delete/ddl/other/null) + `table` (handles quoted
+    ids, `IF NOT EXISTS`, `UPDATE OR <behavior>`, comments). CTEs → null.
+  - Custom webhook `headers` map (validated at creation) applied at delivery —
+    enables e.g. `Authorization` for sync receivers.
+  - Optional Supabase mirror: store constructor takes `Option<Supabase>`; on every
+    change the file is written AND full snapshot upserted to `turso_webhooks`
+    (fire-and-forget); on cold start with no local file, hooks are loaded from
+    Supabase. Local file remains source of truth.
+- **`src/routes.rs`:** `POST /v1/sync/{id}` — applies webhook payload statements to
+  the target db with auth/tenant checks. Deliberately does NOT re-dispatch webhooks
+  (one-hop replication ⇒ no loops). Returns `{applied, rows_affected}`.
+- **`src/models.rs`:** `headers` on `CreateWebhookRequest`; new `SyncResponse`.
+- **`src/main.rs`:** `WebhookStore::new(path, supabase.clone())`.
+- **`Cargo.toml`:** version `1.1.0 → 1.2.0`.
+- **`scripts/webhook-receiver.js`:** zero-dependency Node reference receiver that
+  verifies `X-Turso-Signature` (HMAC, `timingSafeEqual`), logs events, exposes
+  `/last` + `/count`, and `BAD=N` mode to exercise sender retries.
+- **`DEPLOY.md`:** API row for `/sync`, updated webhook docs (retries, `changes`
+  payload, custom headers, Supabase mirror, push-sync how-to).
+- **Git history:** rewrote all 54 commits with `git filter-branch` + `gc
+  --prune=now`; the four leaked literals are gone from the entire object database
+  (verified via `cat-file` scan). Rewritten main is `ahead 3 / behind 0` of the
+  unchanged `origin/main` ancestor → plain push suffices (no force needed).
+
+### Tests (22 total, all pass) — fmt/clippy/build clean
+Added: statement classifier (inserts incl. quoted/comment/OR REPLACE, update incl.
+OR <behavior>, delete, ddl incl. IF NOT EXISTS, CTE→null), headers validation,
+retry-until-success and give-up-after-backoff (in-process axum flaky/always-fail
+handlers + 10ms backoffs), custom-header + `changes` assertions in the loopback test.
+
+### Manual smoke (localhost:3100 + node receiver)
+- Webhook → Node receiver: signature verified OK, `insert`+`update` ops recovered
+  from a 2-statement batch.
+- Flaky receiver `BAD=2`: exactly 3 HTTP hits (2×500 then 200) → retry works live.
+- **Sync e2e:** webhook on dbA (`url=http://127.0.0.1:3100/v1/sync/<dbB>`,
+  `Authorization` header) → writing 2 rows to A replicated them to B; no loop.
+
+### Notes / limitations
+- `changes` classifier is best-effort (no full SQL parser): CTE-prefixed writes and
+  exotic quoting ⇒ `op=null`. Row-level *values* (which rows changed) still not
+  captured — that's a change-tracking/framing layer, not statement parsing.
+- Retry queue is in-memory per-process; a restart between attempts drops pending
+  deliveries. Durable queue is future work.
+- Supabase mirror upserts the full snapshot; orphans (webhooks removed locally)
+  aren't deleted from Supabase. Deleting a DB clears the local entry only.
+- Sync applies statements sequentially; on error it aborts with `SYNC_ERROR` (400)
+  so the sender retries — at-least-once, apply idempotency is the operator's concern.
+
+### Files changed
+`Cargo.toml`, `Cargo.lock`, `DEPLOY.md`, `src/webhooks.rs`, `src/routes.rs`,
+`src/models.rs`, `src/main.rs`, new `scripts/webhook-receiver.js`.
+Committed locally; push deferred to the boss (Render secrets).
+
+---
+
 ## 2026-08-29 — Webhook/sync feature (v1.1.0)
 
 **Model/session:** opencode (big-pickle)

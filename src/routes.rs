@@ -60,6 +60,7 @@ pub fn api_routes(
             get(list_webhooks).post(create_webhook),
         )
         .route("/databases/{id}/webhooks/{hook_id}", delete(delete_webhook))
+        .route("/sync/{id}", post(sync_database))
         .route("/setup", post(setup_database))
         .route("/rate-limit", get(rate_limit_info))
         .route("/analytics", get(analytics_handler))
@@ -587,7 +588,13 @@ async fn create_webhook(
     })?;
     let hook = state
         .webhooks
-        .add(&id, &payload.url, payload.secret, payload.events)
+        .add(
+            &id,
+            &payload.url,
+            payload.secret,
+            payload.events,
+            payload.headers,
+        )
         .map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
@@ -701,6 +708,53 @@ async fn dispatch_webhooks(state: &AppState, db_id: &str, report: &crate::db::Ex
         report.statements.clone(),
         report.rows_affected,
     );
+}
+
+async fn sync_database(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<SyncResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&headers)?;
+    check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+
+    let statements: Vec<String> = body
+        .get("statements")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut applied = 0;
+    let mut rows_affected = 0u64;
+    for sql in statements {
+        match state.db_manager.execute(&id, &sql).await {
+            Ok(report) => {
+                applied += report.statements.len();
+                rows_affected += report.rows_affected;
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("statement {applied} failed: {e}"),
+                        code: "SYNC_ERROR".into(),
+                    }),
+                ));
+            }
+        }
+    }
+    // Incoming sync applies directly to this database and deliberately does NOT re-dispatch
+    // webhooks: replication is one hop from the authoritative source, which prevents loops.
+    Ok(Json(SyncResponse {
+        applied,
+        rows_affected,
+    }))
 }
 
 async fn run_query(

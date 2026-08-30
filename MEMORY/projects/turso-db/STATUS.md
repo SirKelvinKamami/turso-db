@@ -1,7 +1,7 @@
 # Turso Service — Current Status
 
-**Last Updated:** 2026-08-29
-**Version:** 1.1.0 (webhook/sync feature; uncommitted until this session's commit)
+**Last Updated:** 2026-08-31
+**Version:** 1.2.0 (webhooks: retries, row-level events, headers, Supabase mirror, sync receiver)
 
 ---
 
@@ -10,41 +10,42 @@
 - Build environment repaired on the dev machine (Windows / windows-gnu).
 - Security pass completed: Google ID-token verification via JWKS, graceful admin-password handling, committed secrets scrubbed.
 - `/query` returns real column names; multi-statement `execute`; `delete_database` cleans orphan WAL/shm files.
-- **Webhook/sync feature shipped (v1.1.0):** outbound `write` webhooks with HMAC signing, wired to both `/execute` and the libsql pipeline; CRUD API + file persistence + 16 passing tests.
-- `cargo fmt --check`, `cargo clippy --all-targets`, `cargo build`, `cargo test` — all pass, zero warnings.
+- **Webhooks mature (v1.2.0):** outbound `write` webhooks with HMAC signing, retry/backoff,
+  per-statement `changes` classification, custom delivery headers, optional Supabase
+  mirror, and a loop-free `/v1/sync/{id}` receiver for push replication between instances.
+- **Git history rewritten** (54 commits, `filter-branch` + `gc`): all four leaked literals
+  purged from the object database (verified); rewritten main sits ahead 3 / behind 0 of
+  origin/main so a normal push works.
+- `cargo fmt --check`, `cargo clippy --all-targets`, `cargo build`, `cargo test` — all pass
+  (22 tests), zero warnings.
 
 ## What Is Uncommitted
 
-This session's webhook feature is committed locally only (not pushed):
-
-1. `src/webhooks.rs` — webhook store + dispatch (HMAC signing, fire-and-forget).
-2. `src/routes.rs` — webhook CRUD routes + dispatch from `execute_query`.
-3. `src/libsql.rs` — pipeline accumulates writes and dispatches.
-4. `src/db.rs` — `ExecuteReport`, `pub(crate)` `split_sql`, `sql_is_query`.
-5. `src/models.rs` — `CreateWebhookRequest`, `WebhookResponse`.
-6. `Cargo.toml`/lock — `hmac`, `sha2`, `hex`; version `1.1.0`.
-7. `DEPLOY.md` — webhook docs.
-
-(All of the 2026-08-28 security/columns/lint work and the MEMORY structure are already committed as `bf74f20` + `0974b57`.)
+Nothing — everything (v1.1.0 + v1.2.0 + rewritten history) is committed locally.
+Three commits ahead of `origin/main`; push intentionally withheld until the boss
+re-enters Render secrets and rotates credentials.
 
 ## Blockers / Decisions Needed
 
 - ~~**Port conflict:**~~ Resolved 2026-08-28: `BIND_ADDRESS=0.0.0.0:3100` in `D:\turso-service\.env` (untracked). Port 3000 remains owned by another project's Next.js dev server (node, PID 6068) — unchanged.
 - **Render secrets:** `render.yaml` secrets now have `sync: false`. Secrets must be re-enterered in the Render dashboard, otherwise the next push-triggered deploy breaks.
-- **No push yet:** everything is committed locally only (owner chose "commit only, no push").
+- **Push pending:** history rewritten (filter-branch) + feature commits ready; push is fast-forward-able (ahead 3 / behind 0). Owner approval required — Render secrets must be set first so the auto-deploy boots with real env.
+- **Credential rotation:** old JWT/admin/seed/Google values were exposed; rotate before/at push (guide delivered 2026-08-29; renewal steps in SESSION_LOG).
 - **Where does data live in prod?** Local files + optional Supabase. Prod Render instance has no persistent disk expectation yet (free tier).
 
 ## Next Feature Candidates
 
-- Row-level insert/update/delete webhook events (SQL analysis / change capture pre-execute).
-- Webhook retry/backoff queue + delivery logs.
-- Supabase-backed webhook persistence.
-- Full libsql HTTP replica sync (proper bidirectional sync, larger effort).
+- Durable (disk/Supabase) webhook delivery queue spanning restarts.
+- Row-level change capture including VALUES (SQLite change-tracking/framing layer).
+- Supabase cleanup of orphaned webhook rows.
+- Full libsql replica sync (embedded replica, bidirectional conflict handling).
 - More unit tests (admin/plan/rate-limit logic).
 
 ## Test Notes
 
-- `cargo test --all-targets` → 16 tests, all pass (8 `split_sql` + 8 webhook).
+- `cargo test --all-targets` → 22 tests, all pass (8 `split_sql` + 14 webhooks).
 - Live loopback delivery test proves HMAC signature + headers + payload reach an HTTP target.
-- Manual smoke test verified the webhook CRUD API, validation errors, non-blocking
-  dispatch (~114ms for a 2-statement batch), and cleanup on DB delete.
+- In-process flaky/always-fail axum handlers verify retry-until-success and give-up-after-backoff.
+- Manual smoke: Node receiver verified signature (`sha256=`, constant-time) and classified a
+  batch into insert+update; a `BAD=2` receiver forced exactly 3 attempts; a webhook→
+  `/v1/sync/{db}` chain replicated A→B with no loop.

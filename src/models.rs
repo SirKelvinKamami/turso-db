@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDatabaseRequest {
@@ -106,6 +107,8 @@ pub struct CreateWebhookRequest {
     pub secret: Option<String>,
     #[serde(default)]
     pub events: Option<Vec<String>>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,4 +117,10 @@ pub struct WebhookResponse {
     pub url: String,
     pub events: Vec<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyncResponse {
+    pub applied: usize,
+    pub rows_affected: u64,
 }

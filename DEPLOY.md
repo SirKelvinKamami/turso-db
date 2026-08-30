@@ -75,6 +75,7 @@ Invoke-RestMethod -Uri "http://localhost:3000/v1/databases/$($db.id)/query" -Met
 | GET | `/v1/databases/{id}/webhooks` | List webhooks for a database |
 | POST | `/v1/databases/{id}/webhooks` | Register a webhook (`{url, secret?, events?}`) |
 | DELETE | `/v1/databases/{id}/webhooks/{hook_id}` | Remove a webhook |
+| POST | `/v1/sync/{id}` | Apply a webhook payload's statements (push-sync receiver) |
 | POST | `/v1/setup` | One-click init: db + `projects`/`tasks` schema + seed |
 | GET | `/v1/analytics` | Query volume, totals, per-client breakdown |
 
@@ -98,10 +99,10 @@ point a webhook at another turso-service instance to forward writes.
 ```powershell
 $headers = @{ Authorization = "Bearer $token" }
 
-# Register (optional secret signs the payload; optional events filter)
+# Register (optional secret signs the payload; optional events filter; optional headers)
 $wh = Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks" -Method Post `
   -ContentType "application/json" -Headers $headers `
-  -Body '{"url":"https://your-app.example.com/hooks/db-changed","secret":"pick-a-long-random-string"}'
+  -Body '{"url":"https://your-app.example.com/hooks/db-changed","secret":"pick-a-long-random-string","headers":{"X-Foo":"bar"}}'
 
 # List / remove
 Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks" -Headers $headers
@@ -112,9 +113,10 @@ Delivery details:
 
 - **Timing:** fire-and-forget after the write commits; the HTTP response is not
   delayed by webhook delivery.
+- **Retries:** a failed or non-2xx delivery is retried with backoff (`1s / 2s / 4s / 8s`,
+  five attempts total) before giving up. All attempts happen off the request path.
 - **Event:** currently the `write` event (one delivery per write batch; every
-  statement in the batch is listed in the payload). Row-level
-  insert/update/delete granularity is a planned enhancement.
+  statement in the batch is listed in the payload).
 - **Payload** (JSON, `Content-Type: application/json`):
   ```json
   {
@@ -125,15 +127,41 @@ Delivery details:
     "database": { "id": "<uuid>", "name": "my-app" },
     "owner": "admin",
     "statements": ["INSERT INTO users ..."],
+    "changes": [
+      { "sql": "INSERT INTO users ...", "op": "insert", "table": "users" },
+      { "sql": "UPDATE users ...",      "op": "update", "table": "users" }
+    ],
     "rows_affected": 1
   }
   ```
+  `changes` is a best-effort classifier: each entry carries `op` (`insert`/`update`/
+  `delete`/`ddl`/`other` or `null` when unrecognized — e.g. a CTE — and
+  `table` when it can be parsed).
 - **Signature:** if `secret` is set, the request includes
   `X-Turso-Signature: sha256=<lowercase hex HMAC-SHA256 of the raw body>`.
-  Verify on the receiver side for authenticity.
-- **Headers:** `X-Turso-Event: write`, `X-Turso-Database: <id>`.
-- Webhooks are stored in `DATA_DIR/webhooks.json` and survive restarts. Deleting a
+  Verify on the receiver side for authenticity (see `scripts/webhook-receiver.js`).
+- **Headers:** `X-Turso-Event: write`, `X-Turso-Database: <id>`, plus any custom
+  `headers` you registered (e.g. `Authorization` for a sync receiver).
+- Webhooks are stored in `DATA_DIR/webhooks.json` (and mirrored to Supabase when
+  `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` are set) and survive restarts. Deleting a
   database removes its webhooks. Owner-only access (tenant isolation preserved).
+
+## Push-style sync between instances
+
+Point a webhook at another turso-service instance's sync receiver to replicate
+writes: register a webhook with `url = https://target/v1/sync/<target-db-id>` and a
+`headers` entry `{ "Authorization": "Bearer <token-with-access-to-target-db>" }`.
+
+The sync receiver applies the payload's `statements` to the target database and
+deliberately does **not** re-dispatch webhooks, so replication is always one hop
+from the authoritative source — this prevents notification loops. For N replicas,
+register each replica's sync URL as a webhook on the source.
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($a.id)/webhooks" -Method Post `
+  -ContentType "application/json" -Headers $headers `
+  -Body (@{ url = "http://localhost:3100/v1/sync/$($b.id)"; headers = @{ Authorization = "Bearer $token" } } | ConvertTo-Json -Depth 5)
+```
 
 ---
 
