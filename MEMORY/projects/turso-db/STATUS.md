@@ -23,22 +23,24 @@
   - **Webhook orphan cleanup** — DB delete also removes `turso_webhooks` row.
   - **CI hardened** — fmt + clippy `-D warnings` + test + build on push/PR.
 - **Git history rewritten** (filter-branch + gc): all four leaked literals purged from
-  the object DB; main fully pushed to GitHub (`fd70683` was v1.2.0; v1.3.0 next).
+  the object DB; main fully pushed to GitHub.
+- **v1.3.0 shipped:** push `c51d4bd` → CI green (fmt/clippy/test/build/Deploy) →
+  Render live at `https://turso-db-8svn.onrender.com` (health `version: 1.3.0`,
+  `auth_db: supabase://public.turso_users`, 3 users).
 - `cargo fmt --check`, `cargo clippy --all-targets`, `cargo build`, `cargo test` — all
   pass (49 tests), zero warnings.
 
 ## What Is Uncommitted
 
-The v1.3.0 batch (webhooks.rs, users.rs, auth.rs, plans.rs, ratelimit.rs, config.rs,
-main.rs, Cargo.toml/lock, ci.yml, CHANGELOG.md, DEPLOY.md). Ready to commit + push.
+Nothing — v1.3.0 is committed (`c51d4bd`) and pushed to `origin/main`. Working tree
+clean.
 
 ## Blockers / Decisions Needed
 
 - **Credential rotation** (manual, boss): old JWT/admin/seed/Google values predate the
   July scrubs; ensure the Render dashboard passwords are genuinely new, not reuse.
 - **Render deploy:** auto-deploy on push is active via the CI `RENDER_DEPLOY_HOOK_URL`
-  secret (and `autoDeploy: true`). Confirm that GitHub secret exists or the CI deploy
-  step will fail (tests still gate the push).
+  secret (it exists and fired on the v1.3.0 push — confirmed in workflow logs).
 - **Where does data live in prod?** Supabase now set on Render (users + db files +
   analytics + webhooks). 1GB Render disk is a caching layer.
 
