@@ -115,6 +115,10 @@ Delivery details:
   delayed by webhook delivery.
 - **Retries:** a failed or non-2xx delivery is retried with backoff (`1s / 2s / 4s / 8s`,
   five attempts total) before giving up. All attempts happen off the request path.
+- **Durable queue:** if all retry attempts still fail, the delivery is persisted to
+  `DATA_DIR/pending_deliveries/` and retried again on a background timer (every 60s),
+  so it survives process restarts until the receiver comes back. Queued deliveries for a
+  deleted webhook/database are purged automatically.
 - **Event:** currently the `write` event (one delivery per write batch; every
   statement in the batch is listed in the payload).
 - **Payload** (JSON, `Content-Type: application/json`):

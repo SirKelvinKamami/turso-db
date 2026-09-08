@@ -18,17 +18,22 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Enable Rust cache
         uses: Swatinem/rust-cache@v2
 
       - name: cargo fmt --check
-        run: cargo fmt --check || true
+        run: cargo fmt --check
 
-      - name: cargo check
-        run: cargo check --release
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: cargo build
+      - name: cargo test
+        run: cargo test --all-targets
+
+      - name: cargo build --release
         run: cargo build --release
 
       - name: Deploy to Render

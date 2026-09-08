@@ -61,12 +61,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let user_store_arc = Arc::new(user_store);
+    if supabase.is_some() {
+        let loaded = user_store_arc.load_all().await;
+        tracing::info!("Loaded {} user(s) from Supabase into cache", loaded);
+    }
 
     let rate_limiter = RateLimiter::new(config.max_queries_per_minute, 60);
     let webhook_store = WebhookStore::new(
         &format!("{}/webhooks.json", config.data_dir),
         supabase.clone(),
     );
+    webhook_store.spawn_retry_loop();
     let query_tracker = QueryTracker::new(supabase.clone());
     if supabase.is_some() {
         query_tracker.load_from_supabase().await;

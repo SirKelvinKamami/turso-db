@@ -67,3 +67,46 @@ impl Plan {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_known_plans_case_insensitively() {
+        assert_eq!(Plan::from_str("starter"), Plan::Starter);
+        assert_eq!(Plan::from_str("STARTER"), Plan::Starter);
+        assert_eq!(Plan::from_str("Pro"), Plan::Pro);
+        assert_eq!(Plan::from_str("ENTERPRISE"), Plan::Enterprise);
+    }
+
+    #[test]
+    fn unknown_plan_defaults_to_free() {
+        assert_eq!(Plan::from_str("hacker-level"), Plan::Free);
+        assert_eq!(Plan::from_str(""), Plan::Free);
+        assert_eq!(Plan::from_str("  "), Plan::Free);
+    }
+
+    #[test]
+    fn plan_limits_are_ordered() {
+        assert!(Plan::Free.max_databases() < Plan::Starter.max_databases());
+        assert!(Plan::Starter.max_databases() < Plan::Pro.max_databases());
+        assert!(Plan::Pro.max_databases() < Plan::Enterprise.max_databases());
+
+        assert!(Plan::Free.max_queries_per_minute() < Plan::Starter.max_queries_per_minute());
+        assert!(Plan::Starter.max_queries_per_minute() < Plan::Pro.max_queries_per_minute());
+        assert!(Plan::Pro.max_queries_per_minute() < Plan::Enterprise.max_queries_per_minute());
+    }
+
+    #[test]
+    fn as_str_roundtrips_through_from_str() {
+        for plan in [Plan::Free, Plan::Starter, Plan::Pro, Plan::Enterprise] {
+            assert_eq!(Plan::from_str(plan.as_str()), plan);
+        }
+    }
+
+    #[test]
+    fn free_plan_is_default() {
+        assert_eq!(Plan::default(), Plan::Free);
+    }
+}

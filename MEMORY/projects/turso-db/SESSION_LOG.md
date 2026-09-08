@@ -4,6 +4,72 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-08-31 (cont.) — v1.3.0: durable webhook queue, test coverage, UserStore cache, CI polish
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Work the "Important" and "Nice to have" feature lists after the v1.2.0 launch:
+durable webhooks, expanded unit tests, UserStore resilience, Supabase orphan cleanup,
+CI hardening, changelog + version bump.
+
+### What was built (commit pending `…`)
+- **Durable webhook queue (`src/webhooks.rs`):** after in-memory backoff is exhausted,
+  the delivery is serialized to `DATA_DIR/pending_deliveries/<uuid>.json` as a
+  `PendingDelivery` (full webhook snapshot + base64-free JSON payload). A background
+  timer (`spawn_retry_loop`, 60s) replays pending deliveries via
+  `retry_pending_once` (backed by `deliver_with_backoff`); files are deleted on
+  success. `remove`/`remove_all` purge matching pending files so deleted resources
+  stop retrying. Supabase parity: deleting a DB now also deletes its `turso_webhooks`
+  row (orphan cleanup).
+- **UserStore cache (`src/users.rs`):** new `load_all()` warms the in-memory map from
+  Supabase at startup (wired in `main.rs`); `get_user` reads the cache first and falls
+  back to Supabase only on miss; `list_users` returns the cache if Supabase is
+  unreachable; writes (`create_user`/`set_api_key`/`set_plan`/`delete_user`) keep the
+  cache in sync. Auth now survives a Supabase outage.
+- **Tests 22→49:**
+  - `auth.rs`: token roundtrip/wrong-secret/garbage/expired (direct JWT encode for a
+    guaranteed-past `exp` — jsonwebtoken's 60s leeway broke the 0-hour variant),
+    Bearer extraction, admin case-insensitivity, unique API keys.
+  - `plans.rs`: parsing case-insensitivity, unknown→Free, ordered limits, as_str
+    roundtrip, default-Plan.
+  - `ratelimit.rs`: admits-up-to-max, per-key isolation, custom limit override,
+    window reset (backdated `Instant` via internal state), accessors.
+  - `users.rs`: create+verify, duplicate rejection, mem-cache `get_user`, API-key
+    ensure/rotate, set_plan/delete, `from_row` defaults.
+  - `config.rs`: extracted `parse_seed_users()` (kept module-local, not public API) and
+    tested good/malformed/empty inputs.
+  - `webhooks.rs`: pending delivery serialization roundtrip + durable-queue test
+    (persist → fresh store reloads → retry succeeds against flaky endpoint → file
+    removed).
+- **CI (`.github/workflows/ci.yml`):** removed `fmt --check || true` (it masked
+  failures), added `cargo clippy --all-targets -- -D warnings`, `cargo test
+  --all-targets`, kept the Render deploy hook step. Trailing `cargo build --release`
+  retained as the last gate.
+- **Version/docs:** `1.3.0` in Cargo.toml (+lock), new `CHANGELOG.md` (1.0→1.3),
+  DEPLOY.md gain "Durable queue" bullet, MEMORY STATUS/SESSION_LOG/daily updated.
+
+### Tests / verification
+- `cargo build`, `cargo fmt --check`, `cargo clippy --all-targets` (0 warnings),
+  `cargo test --all-targets` → **49 pass**.
+- Runtime: Render still serving v1.2.0 at `https://turso-db-8svn.onrender.com`
+  (healthy, `supabase://public.turso_users`) — v1.3.0 will land via push → auto-deploy.
+
+### Notes / limitations
+- Pending deliveries retry every 60s **forever** for truly-dead receivers; a bounded
+  TTL/max-retry-slot is a follow-up (files grow one-per-undelivered batch otherwise).
+- Supabase write paths for webhooks are still fire-and-forget (best-effort mirror);
+  the local file + pending dir are the durable source of truth.
+- Lockstep: the CI `RENDER_DEPLOY_HOOK_URL` GitHub secret must exist or the deploy
+  step of CI fails (build/test still gate the push).
+
+### Files changed
+`src/webhooks.rs`, `src/users.rs`, `src/auth.rs`, `src/plans.rs`, `src/ratelimit.rs`,
+`src/config.rs`, `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
+`.github/workflows/ci.yml`, `CHANGELOG.md`, `DEPLOY.md`, MEMORY files.
+
+---
+
 ## 2026-08-31 — Webhooks v1.2.0: retries, row-level events, headers, Supabase mirror, sync receiver (all-of-the-above batch)
 
 **Model/session:** opencode (big-pickle)

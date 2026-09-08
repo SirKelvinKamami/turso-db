@@ -43,9 +43,22 @@ impl Webhook {
     }
 }
 
+/// A single delivery that has not yet been confirmed by its receiver. Persists across
+/// restarts so a crash between retry attempts does not drop the webhook.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingDelivery {
+    pub id: String,
+    pub db_id: String,
+    pub event: String,
+    pub hook: Webhook,
+    pub attempts: u32,
+    pub payload: Vec<u8>,
+}
+
 #[derive(Clone)]
 pub struct WebhookStore {
     path: String,
+    pending_dir: String,
     hooks: Arc<DashMap<String, Vec<Webhook>>>,
     client: reqwest::Client,
     supabase: Option<Supabase>,
@@ -53,8 +66,18 @@ pub struct WebhookStore {
 
 impl WebhookStore {
     pub fn new(path: &str, supabase: Option<Supabase>) -> Self {
+        let data_dir = Path::new(path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".to_string());
+        let pending_dir = std::path::Path::new(&data_dir)
+            .join("pending_deliveries")
+            .to_string_lossy()
+            .into_owned();
+        std::fs::create_dir_all(&pending_dir).ok();
         let store = Self {
             path: path.to_string(),
+            pending_dir,
             hooks: Arc::new(DashMap::new()),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -215,6 +238,7 @@ impl WebhookStore {
         }
         if removed {
             self.save();
+            self.purge_pending_for(db_id, Some(hook_id));
         }
         removed
     }
@@ -222,6 +246,36 @@ impl WebhookStore {
     pub fn remove_all(&self, db_id: &str) {
         if self.hooks.remove(db_id).is_some() {
             self.save();
+            self.purge_pending_for(db_id, None);
+            if let Some(sb) = self.supabase.clone() {
+                let did = db_id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = sb.delete(SUPABASE_TABLE, &format!("id=eq.{}", did)).await {
+                        tracing::warn!("Supabase webhooks delete failed: {}", e);
+                    }
+                });
+            }
+        }
+    }
+
+    /// Remove queued deliveries for a database (and optionally a specific webhook) so
+    /// retries for deleted resources stop.
+    fn purge_pending_for(&self, db_id: &str, hook_id: Option<&str>) {
+        if let Ok(entries) = std::fs::read_dir(&self.pending_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let keep = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<PendingDelivery>(&raw).ok())
+                    .map(|d| d.db_id != db_id || hook_id.is_some_and(|hid| d.hook.id == hid))
+                    .unwrap_or(true);
+                if !keep {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
         }
     }
 
@@ -245,15 +299,76 @@ impl WebhookStore {
             let did = db_id.to_string();
             let ev = event.to_string();
             tokio::spawn(async move {
-                if !store.deliver(&hook, body, &did, &ev).await {
-                    tracing::warn!(
-                        webhook = %hook.id,
-                        url = %hook.url,
-                        "Webhook delivery failed after all retry attempts"
-                    );
+                if store.deliver(&hook, body.clone(), &did, &ev).await {
+                    return;
                 }
+                store.persist_pending(&hook, did, ev, body);
             });
         }
+    }
+
+    /// Persist an undelivered webhook so it can be retried after a restart.
+    /// Each delivery is a single JSON file under the pending_dir.
+    fn persist_pending(&self, hook: &Webhook, db_id: String, event: String, body: Vec<u8>) {
+        let pending = PendingDelivery {
+            id: Uuid::new_v4().to_string(),
+            db_id,
+            event,
+            hook: hook.clone(),
+            attempts: DEFAULT_BACKOFF.len() as u32 + 1,
+            payload: body,
+        };
+        let path = format!("{}/{}.json", self.pending_dir, pending.id);
+        if let Ok(raw) = serde_json::to_string_pretty(&pending)
+            && let Err(e) = std::fs::write(&path, raw)
+        {
+            tracing::error!("Failed to queue pending webhook delivery: {}", e);
+            return;
+        }
+        tracing::warn!(
+            webhook = %pending.hook.id,
+            url = %pending.hook.url,
+            "Webhook delivery failed after all attempts; queued for later retry"
+        );
+    }
+
+    /// Retry all queued deliveries once and remove each file on success.
+    /// Public so a background loop can call it periodically.
+    pub async fn retry_pending_once(&self) {
+        let mut pending = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.pending_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Ok(raw) = std::fs::read_to_string(&p)
+                    && let Ok(d) = serde_json::from_str::<PendingDelivery>(&raw)
+                {
+                    pending.push((p, d));
+                }
+            }
+        }
+        for (path, d) in pending {
+            let delivered = self
+                .deliver_with_backoff(&d.hook, d.payload, &d.db_id, &d.event, &DEFAULT_BACKOFF)
+                .await;
+            if delivered {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// Start a background task that periodically retries queued deliveries.
+    pub fn spawn_retry_loop(&self) {
+        let store = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                ticker.tick().await;
+                store.retry_pending_once().await;
+            }
+        });
     }
 
     async fn deliver(&self, hook: &Webhook, body: Vec<u8>, db_id: &str, event: &str) -> bool {
@@ -933,5 +1048,92 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 3, "1 + backoff count attempts");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_delivery_is_queued_and_retried_later() {
+        use axum::{Router, extract::State, http::StatusCode, routing::post};
+        use std::sync::atomic::{AtomicU8, Ordering};
+
+        // A handler that fails the first call then succeeds.
+        async fn flaky_handler(State(count): State<Arc<AtomicU8>>) -> StatusCode {
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            if n < 1 {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::OK
+            }
+        }
+
+        let hits = Arc::new(AtomicU8::new(0));
+        let app = Router::new()
+            .route("/q", post(flaky_handler))
+            .with_state(hits.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let dir = std::env::temp_dir().join(format!("turso-q-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Simulate a failed delivery being queued for later (e.g. receiver was down).
+        let store1 = WebhookStore::new(dir.join("w1.json").to_str().unwrap(), None);
+        let hook1 = Webhook {
+            id: "q1".into(),
+            url: format!("http://{addr}/q"),
+            secret: String::new(),
+            events: vec![EVENT_WRITE.into()],
+            headers: HashMap::new(),
+            created_at: String::new(),
+        };
+        store1.persist_pending(&hook1, "db-q".into(), EVENT_WRITE.into(), b"{}".to_vec());
+        let after_persist = std::fs::read_dir(&store1.pending_dir).unwrap().count();
+        assert_eq!(
+            after_persist, 1,
+            "expected one queued delivery file after persist"
+        );
+
+        // On a "restart", a fresh store finds the file, attempts delivery, and on the
+        // backoff the target (which failed on call 1 but succeeds on call 2) accepts, so
+        // the pending file is removed.
+        let store2 = WebhookStore::new(dir.join("w1.json").to_str().unwrap(), None);
+        store2.retry_pending_once().await;
+
+        let remaining = std::fs::read_dir(&store2.pending_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .count();
+        assert_eq!(
+            remaining, 0,
+            "pending file should be removed after successful retry"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pending_delivery_roundtrip_serializes() {
+        let d = PendingDelivery {
+            id: "p1".into(),
+            db_id: "db-1".into(),
+            event: EVENT_WRITE.into(),
+            hook: Webhook {
+                id: "h1".into(),
+                url: "https://x.test".into(),
+                secret: "s".into(),
+                events: vec![EVENT_WRITE.into()],
+                headers: HashMap::new(),
+                created_at: "now".into(),
+            },
+            attempts: 5,
+            payload: b"{}".to_vec(),
+        };
+        let raw = serde_json::to_string(&d).unwrap();
+        let back: PendingDelivery = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.id, "p1");
+        assert_eq!(back.hook.secret, "s");
+        assert_eq!(back.attempts, 5);
     }
 }

@@ -39,21 +39,52 @@ impl Config {
                 .parse()?,
             encryption_key: std::env::var("ENCRYPTION_KEY").ok(),
             google_client_id: std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
-            seed_users: {
-                let raw = std::env::var("SEED_USERS").unwrap_or_default();
-                raw.split(',')
-                    .filter(|s| !s.is_empty())
-                    .filter_map(|pair| {
-                        let parts: Vec<&str> = pair.split(':').collect();
-                        if parts.len() == 2 {
-                            Some((parts[0].to_string(), parts[1].to_string()))
-                        } else {
-                            tracing::warn!("Invalid SEED_USERS entry: {}", pair);
-                            None
-                        }
-                    })
-                    .collect()
-            },
+            seed_users: parse_seed_users(&std::env::var("SEED_USERS").unwrap_or_default()),
         })
+    }
+}
+
+fn parse_seed_users(raw: &str) -> Vec<(String, String)> {
+    raw.split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|pair| {
+            let parts: Vec<&str> = pair.split(':').collect();
+            if parts.len() == 2 {
+                Some((parts[0].to_string(), parts[1].to_string()))
+            } else {
+                tracing::warn!("Invalid SEED_USERS entry: {}", pair);
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_seed_users() {
+        let seeds = parse_seed_users("alice:pass1,bob:pass2");
+        assert_eq!(
+            seeds,
+            vec![
+                ("alice".to_string(), "pass1".to_string()),
+                ("bob".to_string(), "pass2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_or_malformed_seed_users() {
+        assert!(parse_seed_users("").is_empty());
+        assert!(parse_seed_users(",,,").is_empty());
+        assert!(parse_seed_users("no-colon-here").is_empty());
+        assert!(parse_seed_users("a:b:c").is_empty());
+        // Malformed entries are dropped, valid ones kept.
+        assert_eq!(
+            parse_seed_users("good:pw,badentry"),
+            vec![("good".to_string(), "pw".to_string())]
+        );
     }
 }
