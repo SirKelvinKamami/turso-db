@@ -4,6 +4,68 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-09-08 — v1.4.0: bounded retry queue, HTTP integration tests, INSERT VALUES capture, config-in-state
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Continue the "Nice to have" list after v1.3.0 shipped: bounded TTL/max-attempts for
+pending deliveries, HTTP route-handler integration tests, row-level change capture
+incl. VALUES for INSERT, then ship the batch (bump + docs + commit + push).
+
+### What was built
+- **Bounded pending deliveries (`src/webhooks.rs`):** `PendingDelivery.created_at`
+  (RFC3339; `#[serde(default = "clock_now_rfc3339")]` so legacy files without it parse),
+  `persist_pending` stamps it, `retry_pending_once` enforces `pending_limits()` —
+  `WEBHOOK_PENDING_MAX_ATTEMPTS` (default 10080) and `WEBHOOK_PENDING_TTL_SECS`
+  (default 604800) — dropping exhausted/expired deliveries with a warn, and increments
+  `attempts` + rewrites the file on failure.
+- **HTTP route-handler integration tests (`src/routes.rs mod integration_tests`):**
+  in-process Router with tower `TestClient`. Helpers `build_ctx()` (async; creates
+  `Config` + temp dir + UserStore + Router), `send()`, `test_config()`, `TestCtx
+  { app, user_store, dir }`. Tests: health + unauthenticated guards (401s on
+  `/users`/admin/health-with-token path), login + DB lifecycle (create→query→delete),
+  admin-only + ownership isolation (user A cannot touch B's db), missing-db 404-vs-401
+  ordering, webhook URL/ownership validation, plan-based per-user rate limit
+  (Free user + 100 executes → 429), one-time setup (second POST → 409, hub db created).
+  Admin tokens minted directly via `create_token` (login still needs env).
+- **Config-in-AppState refactor:** `Config` now lives in `AppState`; `api_routes(config,
+  ...)` signature, `main.rs` wires `config.clone()`; `authenticate(&state, &headers)`,
+  `authenticate_admin(&state, &headers)`, `google_config(State<AppState>)`. Handlers no
+  longer call `Config::load()` per request — no per-request dotenv reads, hermetic
+  tests. (One build error fixed: `.clone()` around `google_client_id`; one accidental
+  edit removed `volume_raw`, restored.)
+- **Row-level change capture incl. VALUES:** `capture_insert_values(sql)` →
+  `{ columns, rows }` parsed from the `VALUES` clause (tokenizer handles '
+  'quoted strings', '' escapes, double-quote/backtick/bracket identifiers, nested
+  parenthesized calls, multi-row tuples, comma-separated rows). `change_events` adds
+  `values` only for `insert` ops; `null` when unparsable (`INSERT ... SELECT`).
+- **Version/docs:** Cargo.toml/lock `1.3.0 → 1.4.0`; CHANGELOG 1.4.0 entry; DEPLOY.md
+  payload example shows `values`, queue-bounds env vars documented; daily report.
+- **Deps (dev):** `tower = { version = "0.5", features = ["util"] }`,
+  `http-body-util = "0.1"`.
+
+### Tests / verification
+- `cargo test --all-targets` → **63 pass** (was 49). Integration run caught two real
+  details: `create_database` returns 200 (no explicit status tuple) and query rows are
+  `Vec<Vec<String>>` (id arrives as `"1"`).
+- `cargo fmt --check` and `cargo clippy --all-targets` clean (ci runs clippy with `-D
+  warnings`; fixed `collapsible_if` in webhooks + `useless format!` in a test).
+
+### Notes / limitations
+- VALUES capture is best-effort statement parsing, not real change-framing before
+  execute — UPDATE/DELETE value capture and true pre-execute framing remain future
+  work. `values` is additive to the payload (backward compatible).
+- 7-day TTL of pending deliveries means a receiver down >7 days loses events (by
+  design, bounded file growth).
+
+### Files changed
+`src/webhooks.rs`, `src/routes.rs`, `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
+`CHANGELOG.md`, `DEPLOY.md`, MEMORY files. Push = `git push origin main` (Render
+auto-deploys via CI hook).
+
+---
+
 ## 2026-08-31 (cont.) — v1.3.0: durable webhook queue, test coverage, UserStore cache, CI polish
 
 **Model/session:** opencode (big-pickle)

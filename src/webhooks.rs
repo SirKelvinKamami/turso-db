@@ -19,6 +19,8 @@ const DEFAULT_BACKOFF: [Duration; 4] = [
     Duration::from_secs(4),
     Duration::from_secs(8),
 ];
+const PENDING_TTL_DEFAULT_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+const PENDING_MAX_ATTEMPTS_DEFAULT: u32 = 10080; // one retry tick per 60s over 7 days
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Webhook {
@@ -53,6 +55,14 @@ pub struct PendingDelivery {
     pub hook: Webhook,
     pub attempts: u32,
     pub payload: Vec<u8>,
+    /// When the delivery first became pending (UTC RFC 3339). Used to bound retries via
+    /// a TTL so permanently-dead receivers do not accumulate files forever.
+    #[serde(default = "clock_now_rfc3339")]
+    pub created_at: String,
+}
+
+fn clock_now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
 }
 
 #[derive(Clone)]
@@ -317,6 +327,7 @@ impl WebhookStore {
             hook: hook.clone(),
             attempts: DEFAULT_BACKOFF.len() as u32 + 1,
             payload: body,
+            created_at: clock_now_rfc3339(),
         };
         let path = format!("{}/{}.json", self.pending_dir, pending.id);
         if let Ok(raw) = serde_json::to_string_pretty(&pending)
@@ -335,6 +346,7 @@ impl WebhookStore {
     /// Retry all queued deliveries once and remove each file on success.
     /// Public so a background loop can call it periodically.
     pub async fn retry_pending_once(&self) {
+        let (max_attempts, ttl_secs) = pending_limits();
         let mut pending = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&self.pending_dir) {
             for entry in entries.flatten() {
@@ -349,12 +361,36 @@ impl WebhookStore {
                 }
             }
         }
-        for (path, d) in pending {
+        for (path, mut d) in pending {
+            if should_drop_pending(&d, max_attempts, ttl_secs) {
+                tracing::warn!(
+                    webhook = %d.hook.id,
+                    url = %d.hook.url,
+                    attempts = d.attempts,
+                    created = %d.created_at,
+                    "Webhook delivery expired; dropping queued delivery"
+                );
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
             let delivered = self
-                .deliver_with_backoff(&d.hook, d.payload, &d.db_id, &d.event, &DEFAULT_BACKOFF)
+                .deliver_with_backoff(
+                    &d.hook,
+                    d.payload.clone(),
+                    &d.db_id,
+                    &d.event,
+                    &DEFAULT_BACKOFF,
+                )
                 .await;
             if delivered {
                 let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            d.attempts += 1;
+            if let Ok(raw) = serde_json::to_string_pretty(&d)
+                && let Err(e) = std::fs::write(&path, raw)
+            {
+                tracing::error!("Failed to update pending delivery attempts: {}", e);
             }
         }
     }
@@ -443,6 +479,33 @@ pub fn validate_url(url: &str) -> Result<(), String> {
         "http" | "https" => Ok(()),
         other => Err(format!("webhook URL scheme must be http(s), got '{other}'")),
     }
+}
+
+/// Retry bounds for queued deliveries, from env with sane defaults.
+/// - `WEBHOOK_PENDING_MAX_ATTEMPTS`: drop a delivery after this many retry ticks.
+/// - `WEBHOOK_PENDING_TTL_SECS`: drop a delivery older than this many seconds.
+pub fn pending_limits() -> (u32, u64) {
+    let attempts = std::env::var("WEBHOOK_PENDING_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(PENDING_MAX_ATTEMPTS_DEFAULT);
+    let ttl = std::env::var("WEBHOOK_PENDING_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(PENDING_TTL_DEFAULT_SECS);
+    (attempts, ttl)
+}
+
+/// Whether a queued delivery should be dropped instead of retried, based on its attempts
+/// counter and age. Malformed timestamps are treated as fresh (never immediately dropped).
+fn should_drop_pending(d: &PendingDelivery, max_attempts: u32, ttl_secs: u64) -> bool {
+    if d.attempts >= max_attempts {
+        return true;
+    }
+    let age = chrono::DateTime::parse_from_rfc3339(&d.created_at)
+        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds())
+        .unwrap_or(0);
+    age > ttl_secs as i64
 }
 
 pub fn validate_events(events: &[String]) -> Result<(), String> {
@@ -639,10 +702,153 @@ pub fn change_events(statements: &[String]) -> Value {
             .iter()
             .map(|sql| {
                 let (op, table) = classify_write(sql);
-                json!({ "sql": sql, "op": op, "table": table })
+                let mut ev = json!({ "sql": sql, "op": op, "table": table });
+                if op == Some("insert") {
+                    ev["values"] = capture_insert_values(sql);
+                }
+                ev
             })
             .collect(),
     )
+}
+
+/// Best-effort capture of the VALUES clause of an INSERT statement as
+/// `{ "columns": [...], "rows": [[...], ...] }`. Returns null when the statement is not
+/// a plain `INSERT ... VALUES` (e.g. `INSERT ... SELECT` or an unparsable clause), so
+/// change events remain honest about what they know.
+pub fn capture_insert_values(sql: &str) -> Value {
+    let s = strip_comments(sql);
+    let lower = s.to_ascii_lowercase();
+    let Some(rest) = after_keyword(s, &lower, "values") else {
+        return Value::Null;
+    };
+    let rows = parse_value_rows(rest);
+    if rows.is_empty() {
+        return Value::Null;
+    }
+    let columns = insert_columns(s, &lower);
+    json!({ "columns": columns, "rows": rows })
+}
+
+/// Tokenizer for `(v1, v2), (v3, v4)` tuples following a VALUES keyword. Handles single
+/// quoted strings (with '' escapes), double-quoted/bracketed identifiers, nested calls
+/// (commas inside parentheses are kept) and skips whitespace/comma separators between rows.
+fn parse_value_rows(s: &str) -> Vec<Vec<String>> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut rows = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        while i < n && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= n {
+            break;
+        }
+        if chars[i] == ',' {
+            i += 1;
+            continue;
+        }
+        if chars[i] != '(' {
+            break;
+        }
+        let mut depth = 0usize;
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut in_backtick = false;
+        let mut token = String::new();
+        let mut cell = Vec::new();
+        let mut closed = false;
+        loop {
+            if i >= n {
+                break;
+            }
+            let c = chars[i];
+            match c {
+                '\'' if !in_double && !in_backtick => {
+                    in_single = !in_single;
+                    token.push(c);
+                }
+                '"' if !in_single && !in_backtick => {
+                    in_double = !in_double;
+                    token.push(c);
+                }
+                '`' if !in_single && !in_double => {
+                    in_backtick = !in_backtick;
+                    token.push(c);
+                }
+                '(' if !in_single && !in_double && !in_backtick => {
+                    depth += 1;
+                    if depth > 1 {
+                        token.push(c);
+                    }
+                }
+                ')' if !in_single && !in_double && !in_backtick => {
+                    if depth == 1 {
+                        cell.push(normalize_value(&token));
+                        closed = true;
+                        break;
+                    }
+                    depth -= 1;
+                    token.push(c);
+                }
+                ',' if !in_single && !in_double && !in_backtick && depth == 1 => {
+                    cell.push(normalize_value(&token));
+                    token.clear();
+                }
+                _ => token.push(c),
+            }
+            i += 1;
+        }
+        if closed {
+            rows.push(cell);
+            i += 1; // step past the closing ')'
+        }
+    }
+    rows
+}
+
+fn normalize_value(t: &str) -> String {
+    let t = t.trim();
+    if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
+        t[1..t.len() - 1].replace("''", "'")
+    } else {
+        t.to_string()
+    }
+}
+
+fn insert_columns(s: &str, lower: &str) -> Option<Vec<String>> {
+    let rest = after_keyword(s, lower, "into")?;
+    let (_, after_table) = take_ident(rest);
+    let after_table = after_table.trim_start();
+    if !after_table.starts_with('(') {
+        return None;
+    }
+    parse_ident_list(after_table)
+}
+
+fn parse_ident_list(s: &str) -> Option<Vec<String>> {
+    let rest = s.trim_start().strip_prefix('(')?;
+    let mut rest = rest;
+    let mut out = Vec::new();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+        if rest.starts_with(')') {
+            break;
+        }
+        let (ident, after) = take_ident(rest);
+        out.push(ident?);
+        rest = after.trim_start();
+        match rest.chars().next() {
+            Some(',') => rest = &rest[1..],
+            Some(')') => break,
+            _ => return Some(out),
+        }
+    }
+    Some(out)
 }
 
 pub fn build_payload(
@@ -749,6 +955,50 @@ mod tests {
             (None, None)
         );
         assert_eq!(classify_write("insertx AS foo"), (None, None));
+    }
+
+    #[test]
+    fn captures_insert_values_with_columns() {
+        let v = capture_insert_values("INSERT INTO users (name, age) VALUES ('Alice', 30)");
+        assert_eq!(v["columns"], serde_json::json!(["name", "age"]));
+        assert_eq!(v["rows"], serde_json::json!([["Alice", "30"]]));
+    }
+
+    #[test]
+    fn captures_multi_row_and_quoted_values() {
+        let v = capture_insert_values("INSERT INTO t (a) VALUES (1), (2), ('x,y'), ('it''s')");
+        assert_eq!(
+            v["rows"],
+            serde_json::json!([["1"], ["2"], ["x,y"], ["it's"]])
+        );
+
+        let nested = capture_insert_values("INSERT INTO t VALUES (upper('x'))");
+        assert_eq!(nested["rows"], serde_json::json!([["upper('x')"]]));
+        assert_eq!(nested["columns"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn insert_without_values_is_null() {
+        assert_eq!(
+            capture_insert_values("INSERT INTO t SELECT * FROM other"),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            capture_insert_values("UPDATE users SET name = 'x'"),
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn change_events_attach_values_only_for_inserts() {
+        let events = change_events(&[
+            "INSERT INTO logs (msg) VALUES ('hi')".into(),
+            "UPDATE logs SET msg = 'hi' WHERE id = 1".into(),
+        ]);
+        assert_eq!(events[0]["op"], "insert");
+        assert_eq!(events[0]["values"]["rows"], serde_json::json!([["hi"]]));
+        assert_eq!(events[1]["op"], "update");
+        assert!(events[1].get("values").is_none(), "updates carry no values");
     }
 
     #[test]
@@ -1129,11 +1379,79 @@ mod tests {
             },
             attempts: 5,
             payload: b"{}".to_vec(),
+            created_at: clock_now_rfc3339(),
         };
         let raw = serde_json::to_string(&d).unwrap();
         let back: PendingDelivery = serde_json::from_str(&raw).unwrap();
         assert_eq!(back.id, "p1");
         assert_eq!(back.hook.secret, "s");
         assert_eq!(back.attempts, 5);
+    }
+
+    #[test]
+    fn legacy_pending_file_without_created_at_parses() {
+        let raw = r#"{"id":"p1","db_id":"db-1","event":"write",
+                     "hook":{"id":"h1","url":"https://x.test","secret":"s",
+                             "events":["write"],"headers":{},"created_at":"now"},
+                     "attempts":5,"payload":[123,125]}"#;
+        let parsed: PendingDelivery = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.id, "p1");
+        assert_eq!(parsed.attempts, 5);
+        assert!(
+            !parsed.created_at.is_empty(),
+            "created_at must default for legacy files"
+        );
+    }
+
+    #[test]
+    fn pending_delivery_drop_rules() {
+        let base = PendingDelivery {
+            id: "p1".into(),
+            db_id: "db-1".into(),
+            event: EVENT_WRITE.into(),
+            hook: Webhook {
+                id: "h1".into(),
+                url: "https://x.test".into(),
+                secret: "s".into(),
+                events: vec![EVENT_WRITE.into()],
+                headers: HashMap::new(),
+                created_at: "now".into(),
+            },
+            attempts: 5,
+            payload: b"{}".to_vec(),
+            created_at: clock_now_rfc3339(),
+        };
+
+        // Recent delivery within limits → keep.
+        assert!(!should_drop_pending(&base, 10_000, 604_800));
+
+        // Attempts exhausted → drop.
+        let exhausted = PendingDelivery {
+            attempts: 500,
+            ..base.clone()
+        };
+        assert!(should_drop_pending(&exhausted, 500, 604_800));
+
+        // Old delivery past the TTL → drop.
+        let old = PendingDelivery {
+            created_at: "2020-01-01T00:00:00Z".into(),
+            ..base.clone()
+        };
+        assert!(should_drop_pending(&old, 10_000, 3600));
+
+        // Malformed timestamp treated as fresh → keep.
+        let malformed = PendingDelivery {
+            created_at: "not-a-timestamp".into(),
+            ..base.clone()
+        };
+        assert!(!should_drop_pending(&malformed, 10_000, 1));
+    }
+
+    #[test]
+    fn pending_limits_env_overrides() {
+        let (attempts, ttl) = pending_limits();
+        assert!(attempts > 0 && ttl > 0);
+        assert_eq!(PENDING_MAX_ATTEMPTS_DEFAULT, 10_080);
+        assert_eq!(PENDING_TTL_DEFAULT_SECS, 604_800);
     }
 }

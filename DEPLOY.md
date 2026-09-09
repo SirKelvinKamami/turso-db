@@ -118,7 +118,9 @@ Delivery details:
 - **Durable queue:** if all retry attempts still fail, the delivery is persisted to
   `DATA_DIR/pending_deliveries/` and retried again on a background timer (every 60s),
   so it survives process restarts until the receiver comes back. Queued deliveries for a
-  deleted webhook/database are purged automatically.
+  deleted webhook/database are purged automatically. Queues are additionally bounded:
+  deliveries are dropped once they exceed `WEBHOOK_PENDING_MAX_ATTEMPTS` (default
+  10080) or are older than `WEBHOOK_PENDING_TTL_SECS` (default 604800 = 7 days).
 - **Event:** currently the `write` event (one delivery per write batch; every
   statement in the batch is listed in the payload).
 - **Payload** (JSON, `Content-Type: application/json`):
@@ -132,7 +134,8 @@ Delivery details:
     "owner": "admin",
     "statements": ["INSERT INTO users ..."],
     "changes": [
-      { "sql": "INSERT INTO users ...", "op": "insert", "table": "users" },
+      { "sql": "INSERT INTO users ...", "op": "insert", "table": "users",
+        "values": { "columns": null, "rows": [["1", "x"]] } },
       { "sql": "UPDATE users ...",      "op": "update", "table": "users" }
     ],
     "rows_affected": 1
@@ -140,7 +143,9 @@ Delivery details:
   ```
   `changes` is a best-effort classifier: each entry carries `op` (`insert`/`update`/
   `delete`/`ddl`/`other` or `null` when unrecognized — e.g. a CTE — and
-  `table` when it can be parsed).
+  `table` when it can be parsed). Insert entries additionally carry `values`
+  (`{ "columns": [...], "rows": [[...]] }` parsed from the `VALUES` clause, or `null`
+  when it can't be parsed, e.g. `INSERT ... SELECT`).
 - **Signature:** if `secret` is set, the request includes
   `X-Turso-Signature: sha256=<lowercase hex HMAC-SHA256 of the raw body>`.
   Verify on the receiver side for authenticity (see `scripts/webhook-receiver.js`).

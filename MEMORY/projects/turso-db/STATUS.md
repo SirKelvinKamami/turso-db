@@ -1,62 +1,57 @@
 # Turso Service — Current Status
 
-**Last Updated:** 2026-08-31 (v1.3.0)
-**Version:** 1.3.0 (durable webhook queue, auth/plan/rate-limit/user test coverage, UserStore cache, CI hardening)
+**Last Updated:** 2026-09-08 (v1.4.0)
+**Version:** 1.4.0 (bounded retry queue, HTTP integration tests, INSERT VALUES capture, config-in-state)
 
 ---
 
 ## Where We Are
 
 - Build environment repaired on the dev machine (Windows / windows-gnu).
-- Security pass completed: Google ID-token verification via JWKS, graceful admin-password handling, committed secrets scrubbed.
-- `/query` returns real column names; multi-statement `execute`; `delete_database` cleans orphan WAL/shm files.
-- **v1.2.0 live on Render** (`https://turso-db-8svn.onrender.com`): webhooks with HMAC
-  signing, retry/backoff, per-statement `changes`, custom headers, Supabase mirror,
-  loop-free `/v1/sync/{id}` receiver. Supabase persistence confirmed at runtime
-  (`auth_db: supabase://public.turso_users`).
-- **v1.3.0 (this batch):**
-  - **Durable webhook queue** — failed deliveries persisted to `data/pending_deliveries/`
-    and retried every 60s, surviving restarts; purged when webhook/DB deleted.
-  - **Test coverage 22→49** — auth/JWT, plans, rate limiter, UserStore, config seeds.
-  - **UserStore Supabase cache** — warm cache at startup; reads hit memory first, fall
-    back to Supabase only on miss/network failure (auth survives Supabase outages).
-  - **Webhook orphan cleanup** — DB delete also removes `turso_webhooks` row.
-  - **CI hardened** — fmt + clippy `-D warnings` + test + build on push/PR.
-- **Git history rewritten** (filter-branch + gc): all four leaked literals purged from
-  the object DB; main fully pushed to GitHub.
-- **v1.3.0 shipped:** push `c51d4bd` → CI green (fmt/clippy/test/build/Deploy) →
-  Render live at `https://turso-db-8svn.onrender.com` (health `version: 1.3.0`,
-  `auth_db: supabase://public.turso_users`, 3 users).
-- `cargo fmt --check`, `cargo clippy --all-targets`, `cargo build`, `cargo test` — all
-  pass (49 tests), zero warnings.
+- v1.3.0 live on Render (`https://turso-db-8svn.onrender.com`): durable webhook queue,
+  UserStore Supabase cache, orphan cleanup, CI hardening. Confirmed healthy at health
+  endpoint (`auth_db: supabase://public.turso_users`, 3 users).
+- **v1.4.0 (this batch):**
+  - **Bounded pending deliveries** — `WEBHOOK_PENDING_MAX_ATTEMPTS` (default 10080) and
+    `WEBHOOK_PENDING_TTL_SECS` (default 604800 = 7 days); exhausted/expired deliveries
+    dropped; legacy pending files without `created_at` parse via serde default.
+  - **HTTP route-handler integration tests** — in-process Router + tower `TestClient`:
+    auth guards, login+DB lifecycle, 404-vs-401 ordering, ownership isolation, webhook
+    URL/ownership validation, plan-based rate limits, one-time setup.
+  - **Row-level capture incl. VALUES** — `changes[]` entries for `INSERT ... VALUES`
+    now carry `values: { columns, rows }` (best effort, null for `INSERT ... SELECT`).
+  - **Config-in-AppState refactor** — preloaded `Config` in state; handlers no longer
+    re-read dotenv/env per request (hermetic tests; `login` still reads admin env vars).
+  - Test count 49 → **63**; `cargo fmt`, `cargo clippy --all-targets`, `cargo test
+    --all-targets` all clean.
+- **Credential rotation still outstanding** (manual, boss): old JWT/admin/seed/Google
+  values; ensure Render dashboard passwords are genuinely new.
+- Render auto-deploy on push via CI `RENDER_DEPLOY_HOOK_URL`.
 
 ## What Is Uncommitted
 
-Nothing — v1.3.0 is committed (`c51d4bd`) and pushed to `origin/main`. Working tree
-clean.
+v1.4.0 batch is staged for this push (Cargo.toml version bump + CHANGELOG + DEPLOY.md,
+TTL queue bounds, integration tests, VALUES capture, config-in-state, MEMORY updates).
 
 ## Blockers / Decisions Needed
 
-- **Credential rotation** (manual, boss): old JWT/admin/seed/Google values predate the
-  July scrubs; ensure the Render dashboard passwords are genuinely new, not reuse.
-- **Render deploy:** auto-deploy on push is active via the CI `RENDER_DEPLOY_HOOK_URL`
-  secret (it exists and fired on the v1.3.0 push — confirmed in workflow logs).
-- **Where does data live in prod?** Supabase now set on Render (users + db files +
-  analytics + webhooks). 1GB Render disk is a caching layer.
+- **Credential rotation** (manual, boss) — oldest open item.
+- **Where does data live in prod?** Supabase set on Render (users + db files + analytics
+  + webhooks); 1GB Render disk is a caching layer.
 
 ## Next Feature Candidates
 
-- Row-level change capture including VALUES (SQLite change-tracking/framing layer).
 - Full libsql replica sync (embedded replica, bidirectional conflict handling).
-- HTTP route-handler integration tests (auth guards, ownership, plan limits over the wire).
-- Bounded retry-slot/TTL for pending webhook deliveries (avoid unbounded file growth
-  for permanently-dead receivers).
+- UPDATE/DELETE value capture alongside the INSERT VALUES work.
+- Per-delivery ack configuration, per-hook custom retry policy.
 
 ## Test Notes
 
-- `cargo test --all-targets` → **49 tests**, all pass.
-- New: JWT validity/expiry/wrong-secret, Bearer extraction, admin case-insensitivity;
-  plan parsing/limits; rate-limiter windows+isolation+reset; UserStore create/verify/
-  duplicates/api-key/plan/delete; config seed parsing; durable-queue persist+retry.
-- Existing: webhook delivery loopback (signature/headers/payload), retry-until-success,
-  give-up, pending-file roundtrip, `split_sql` suite, manual A→B sync smoke (v1.2.0).
+- `cargo test --all-targets` → **63 tests**, all pass.
+- New this batch: `captures_insert_values_with_columns`, `captures_multi_row_and_quoted_values`,
+  `insert_without_values_is_null`, `change_events_attach_values_only_for_inserts`,
+  `pending_limits_env_overrides`, `pending_delivery_drop_rules`,
+  `legacy_pending_file_without_created_at_parses`; integration: `health_and_unauthenticated_guards`,
+  `user_login_and_database_lifecycle`, `admin_only_and_ownership_isolation`,
+  `missing_database_is_404_but_unauthorized_wins`, `webhooks_require_ownership_and_validate_urls`,
+  `plan_based_per_user_rate_limit`, `setup_creates_hub_database_once`.

@@ -98,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nest(
             "/v1",
             routes::api_routes(
+                config.clone(),
                 db_manager.clone(),
                 (*user_store_arc).clone(),
                 rate_limiter,

@@ -24,9 +24,11 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     pub query_tracker: QueryTracker,
     pub webhooks: WebhookStore,
+    pub config: Config,
 }
 
 pub fn api_routes(
+    config: Config,
     db_manager: DatabaseManager,
     user_store: UserStore,
     rate_limiter: RateLimiter,
@@ -39,6 +41,7 @@ pub fn api_routes(
         rate_limiter,
         query_tracker,
         webhooks,
+        config,
     };
 
     Router::new()
@@ -139,8 +142,6 @@ async fn login(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let _ = check_rate_limit(&state, &headers);
 
-    let config = Config::load().expect("Failed to load config");
-
     let admin_user = std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string());
 
     if payload.username == admin_user {
@@ -151,8 +152,8 @@ async fn login(
             let token = create_token(
                 &payload.username,
                 "admin",
-                &config.jwt_secret,
-                config.jwt_expiry_hours,
+                &state.config.jwt_secret,
+                state.config.jwt_expiry_hours,
             )
             .map_err(|e| {
                 (
@@ -174,8 +175,8 @@ async fn login(
         let token = create_token(
             &user.username,
             "user",
-            &config.jwt_secret,
-            config.jwt_expiry_hours,
+            &state.config.jwt_secret,
+            state.config.jwt_expiry_hours,
         )
         .map_err(|e| {
             (
@@ -194,8 +195,8 @@ async fn login(
     ))
 }
 
-async fn google_config() -> Json<serde_json::Value> {
-    let client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
+async fn google_config(state: State<AppState>) -> Json<serde_json::Value> {
+    let client_id = state.config.google_client_id.clone();
     Json(serde_json::json!({
         "client_id": client_id,
         "enabled": !client_id.is_empty(),
@@ -206,7 +207,7 @@ async fn google_token(
     state: State<AppState>,
     Json(payload): Json<GoogleTokenRequest>,
 ) -> Result<Json<UserResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let config = Config::load().expect("Failed to load config");
+    let config = state.config.clone();
     if config.google_client_id.is_empty() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -267,7 +268,7 @@ async fn signup(
     headers: HeaderMap,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<UserInfo>, (StatusCode, Json<ErrorResponse>)> {
-    authenticate_admin(&headers)?;
+    authenticate_admin(&state, &headers)?;
     let user = state
         .user_store
         .create_user(&payload.username, &payload.password)
@@ -294,7 +295,7 @@ async fn list_users(
     state: State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ClientUserInfo>>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     if claims.typ != "admin" {
         return Err((
             StatusCode::FORBIDDEN,
@@ -334,7 +335,7 @@ async fn rotate_user_api_key(
     headers: HeaderMap,
     Path(username): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     if claims.typ != "admin" {
         return Err((
             StatusCode::FORBIDDEN,
@@ -367,7 +368,7 @@ async fn current_user(
     state: State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     let plan = plan_for(&state, &claims.sub, &claims.typ).await;
     let db_count = if claims.typ == "admin" {
         state.db_manager.list_databases(None).len()
@@ -388,7 +389,7 @@ async fn delete_user(
     headers: HeaderMap,
     Path(username): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    authenticate_admin(&headers)?;
+    authenticate_admin(&state, &headers)?;
     if is_admin(&username) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -420,7 +421,7 @@ async fn set_user_plan(
     Path(username): Path<String>,
     Json(payload): Json<PlanUpdateRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    authenticate_admin(&headers)?;
+    authenticate_admin(&state, &headers)?;
     if is_admin(&username) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -454,7 +455,7 @@ async fn list_databases(
     state: State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<DatabaseResponse>>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     state.query_tracker.track_query(&claims.sub);
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     let owner = if claims.typ == "admin" {
@@ -482,7 +483,7 @@ async fn create_database(
     Json(payload): Json<CreateDatabaseRequest>,
 ) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
     let _ = check_rate_limit(&state, &headers);
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     let owner = &claims.sub;
 
@@ -530,7 +531,7 @@ async fn get_database(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<DatabaseResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     let (_, entry) = state.db_manager.get_database(&id).await.map_err(|_| {
         (
@@ -554,7 +555,7 @@ async fn delete_database(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     state.db_manager.delete_database(&id).await.map_err(|e| {
         (
@@ -575,7 +576,7 @@ async fn create_webhook(
     Path(id): Path<String>,
     Json(payload): Json<CreateWebhookRequest>,
 ) -> Result<(StatusCode, Json<WebhookResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     state.db_manager.get_database(&id).await.map_err(|_| {
         (
@@ -620,7 +621,7 @@ async fn list_webhooks(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<WebhookResponse>>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     let hooks = state.webhooks.list(&id);
     let resp = hooks
@@ -640,7 +641,7 @@ async fn delete_webhook(
     headers: HeaderMap,
     Path((id, hook_id)): Path<(String, String)>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
     if state.webhooks.remove(&id, &hook_id) {
         Ok(StatusCode::NO_CONTENT)
@@ -661,7 +662,7 @@ async fn execute_query(
     Path(id): Path<String>,
     Json(payload): Json<ExecuteRequest>,
 ) -> Result<Json<ExecuteResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     state.query_tracker.track_query(&claims.sub);
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
@@ -716,7 +717,7 @@ async fn sync_database(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<SyncResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
 
@@ -763,7 +764,7 @@ async fn run_query(
     Path(id): Path<String>,
     Json(payload): Json<ExecuteRequest>,
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     state.query_tracker.track_query(&claims.sub);
     check_user_rate_limit(&state, &claims.sub, &claims.typ).await?;
     check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
@@ -787,7 +788,7 @@ async fn setup_database(
     state: State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<SetupResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     let owner = &claims.sub;
 
     let existing = state.db_manager.list_databases(Some(owner));
@@ -861,8 +862,10 @@ async fn rate_limit_info(state: State<AppState>) -> Json<RateLimitInfo> {
     })
 }
 
-fn authenticate(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
-    let config = Config::load().expect("Failed to load config");
+fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -884,7 +887,7 @@ fn authenticate(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorRe
             }),
         )
     })?;
-    verify_token(&token, &config.jwt_secret).map_err(|_| {
+    verify_token(&token, &state.config.jwt_secret).map_err(|_| {
         (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -895,8 +898,11 @@ fn authenticate(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorRe
     })
 }
 
-fn authenticate_admin(headers: &HeaderMap) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(headers)?;
+fn authenticate_admin(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Claims, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(state, headers)?;
     if claims.typ != "admin" {
         return Err((
             StatusCode::FORBIDDEN,
@@ -942,7 +948,7 @@ async fn analytics_handler(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<AnalyticsResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let claims = authenticate(&headers)?;
+    let claims = authenticate(&state, &headers)?;
     let is_admin = claims.typ == "admin";
     let filter_user: Option<&str> = if is_admin {
         params.get("user").map(|s| s.as_str())
@@ -1001,4 +1007,506 @@ async fn analytics_handler(
         volume,
         per_user,
     }))
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::analytics::QueryTracker;
+    use crate::auth::create_token;
+    use crate::config::Config;
+    use crate::db::DatabaseManager;
+    use crate::plans::Plan;
+    use crate::ratelimit::RateLimiter;
+    use crate::users::UserStore;
+    use crate::webhooks::WebhookStore;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::http::header;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    fn test_config(dir: &str) -> Config {
+        Config {
+            bind_address: "0.0.0.0:0".into(),
+            data_dir: dir.into(),
+            jwt_secret: "integration-test-secret".into(),
+            jwt_expiry_hours: 1,
+            max_databases: 100,
+            max_queries_per_minute: 10_000,
+            encryption_key: None,
+            google_client_id: String::new(),
+            seed_users: vec![],
+        }
+    }
+
+    struct TestCtx {
+        app: Router,
+        user_store: UserStore,
+        dir: String,
+    }
+
+    impl TestCtx {
+        fn token(&self, username: &str, typ: &str) -> String {
+            create_token(username, typ, "integration-test-secret", 1).unwrap()
+        }
+
+        async fn create_user(&self, username: &str, password: &str) {
+            self.user_store
+                .create_user(username, password)
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn build_ctx() -> TestCtx {
+        let dir = std::env::temp_dir().join(format!("turso-it-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = test_config(dir.to_str().unwrap());
+        let db_manager = DatabaseManager::new(&config.data_dir, None).await.unwrap();
+        let user_store = UserStore::new(None);
+        let rate_limiter = RateLimiter::new(10_000, 60);
+        let query_tracker = QueryTracker::new(None);
+        let webhooks = WebhookStore::new(&format!("{}/webhooks.json", config.data_dir), None);
+        let app = api_routes(
+            config,
+            db_manager,
+            user_store.clone(),
+            rate_limiter,
+            query_tracker,
+            webhooks,
+        );
+        TestCtx {
+            app,
+            user_store,
+            dir: dir.to_str().unwrap().to_string(),
+        }
+    }
+
+    async fn send(
+        app: &Router,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder().method(method).uri(path);
+        if let Some(t) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        if body.is_some() {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+        }
+        let req = builder
+            .body(Body::from(body.map(|b| b.to_string()).unwrap_or_default()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    fn db_id_from_create(status: StatusCode, json: &serde_json::Value) -> String {
+        assert_eq!(status, StatusCode::OK, "create returns 200 with body");
+        json["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn health_and_unauthenticated_guards() {
+        let ctx = build_ctx().await;
+        let (status, json) = send(&ctx.app, "GET", "/health", None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["status"], "healthy");
+
+        for path in ["/users", "/users/me", "/databases"] {
+            let (status, _) = send(&ctx.app, "GET", path, None, None).await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{path} should require auth"
+            );
+        }
+        let (status, _) = send(
+            &ctx.app,
+            "POST",
+            "/databases",
+            None,
+            Some(serde_json::json!({"name": "x"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, _) = send(&ctx.app, "GET", "/databases", Some("garbage-token"), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn user_login_and_database_lifecycle() {
+        let ctx = build_ctx().await;
+        ctx.create_user("alice", "wonder123").await;
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            "/auth/login",
+            None,
+            Some(serde_json::json!({"username": "alice", "password": "wonder123"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let token = json["token"].as_str().unwrap().to_string();
+
+        let (status, json) = send(&ctx.app, "GET", "/users/me", Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["username"], "alice");
+        assert_eq!(json["type"], "user");
+        assert_eq!(json["plan"], "free");
+        assert_eq!(json["database_count"], 0);
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            "/databases",
+            Some(&token),
+            Some(serde_json::json!({"name": "first-db"})),
+        )
+        .await;
+        let id = db_id_from_create(status, &json);
+
+        let (status, json) = send(&ctx.app, "GET", "/databases", Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 1);
+
+        let (status, _) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/execute"),
+            Some(&token),
+            Some(serde_json::json!({
+                "sql": "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT); INSERT INTO t (name) VALUES ('x');"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/query"),
+            Some(&token),
+            Some(serde_json::json!({"sql": "SELECT id, name FROM t"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["columns"], serde_json::json!(["id", "name"]));
+        assert_eq!(json["rows"], serde_json::json!([["1", "x"]]));
+
+        let (status, json) = send(
+            &ctx.app,
+            "GET",
+            &format!("/databases/{id}"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["owner"], "alice");
+
+        let (status, _) = send(
+            &ctx.app,
+            "DELETE",
+            &format!("/databases/{id}"),
+            Some(&token),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, json) = send(&ctx.app, "GET", "/databases", Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json.as_array().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&ctx.dir);
+    }
+
+    #[tokio::test]
+    async fn admin_only_and_ownership_isolation() {
+        let ctx = build_ctx().await;
+        ctx.create_user("alice", "pw-a").await;
+        ctx.create_user("bob", "pw-b").await;
+
+        let alice = ctx.token("alice", "user");
+        let bob = ctx.token("bob", "user");
+        let admin = ctx.token("admin", "admin");
+
+        // Users listing is admin-only.
+        let (status, _) = send(&ctx.app, "GET", "/users", Some(&alice), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, json) = send(&ctx.app, "GET", "/users", Some(&admin), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 2);
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            "/databases",
+            Some(&alice),
+            Some(serde_json::json!({"name": "alice-db"})),
+        )
+        .await;
+        let alice_db = db_id_from_create(status, &json);
+
+        // bob cannot read, write, or delete alice's database.
+        let (status, _) = send(
+            &ctx.app,
+            "GET",
+            &format!("/databases/{alice_db}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{alice_db}/execute"),
+            Some(&bob),
+            Some(serde_json::json!({"sql": "INSERT INTO t VALUES (1)"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(
+            &ctx.app,
+            "DELETE",
+            &format!("/databases/{alice_db}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // bob sees an empty list; admin can still reach it.
+        let (status, json) = send(&ctx.app, "GET", "/databases", Some(&bob), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json.as_array().unwrap().is_empty());
+        let (status, _) = send(
+            &ctx.app,
+            "GET",
+            &format!("/databases/{alice_db}"),
+            Some(&admin),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Plan/API-key admin endpoints reject non-admins.
+        let (status, _) = send(
+            &ctx.app,
+            "PUT",
+            "/users/bob/plan",
+            Some(&alice),
+            Some(serde_json::json!({"plan": "pro"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = send(&ctx.app, "POST", "/users/bob/api-key", Some(&alice), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Admin can set alice's plan, then she gains the plan in /users/me.
+        let (status, _) = send(
+            &ctx.app,
+            "PUT",
+            "/users/alice/plan",
+            Some(&admin),
+            Some(serde_json::json!({"plan": "pro"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, json) = send(&ctx.app, "GET", "/users/me", Some(&alice), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["plan"], "pro");
+        assert_eq!(json["max_databases"], Plan::Pro.max_databases());
+
+        // Admin deletes bob; his API keys / dbs go with him.
+        let (status, _) = send(&ctx.app, "DELETE", "/users/bob", Some(&admin), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (status, json) = send(&ctx.app, "GET", "/users", Some(&admin), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&ctx.dir);
+    }
+
+    #[tokio::test]
+    async fn missing_database_is_404_but_unauthorized_wins() {
+        let ctx = build_ctx().await;
+        ctx.create_user("alice", "pw").await;
+        let alice = ctx.token("alice", "user");
+
+        // No token at all -> 401 (auth check precedes owner lookup).
+        let (status, _) = send(&ctx.app, "GET", "/databases/does-not-exist", None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Valid token, unknown id -> 404.
+        let (status, json) = send(
+            &ctx.app,
+            "GET",
+            "/databases/does-not-exist",
+            Some(&alice),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["code"], "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn webhooks_require_ownership_and_validate_urls() {
+        let ctx = build_ctx().await;
+        ctx.create_user("alice", "pw-a").await;
+        ctx.create_user("bob", "pw-b").await;
+        let alice = ctx.token("alice", "user");
+        let bob = ctx.token("bob", "user");
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            "/databases",
+            Some(&alice),
+            Some(serde_json::json!({"name": "wb-db"})),
+        )
+        .await;
+        let id = db_id_from_create(status, &json);
+
+        let (status, _) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/webhooks"),
+            Some(&bob),
+            Some(serde_json::json!({"url": "https://bob.example.com/h"})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "webhooks must respect ownership"
+        );
+
+        let (status, _) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            Some(serde_json::json!({"url": "ftp://bad.example.com/h"})),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "invalid URL scheme rejected"
+        );
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            Some(serde_json::json!({"url": "https://alice.example.com/h", "secret": "s3cret"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let hook_id = json["id"].as_str().unwrap().to_string();
+
+        let (status, json) = send(
+            &ctx.app,
+            "GET",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 1);
+
+        // Charlie (the same bob token) cannot delete alice's webhook.
+        let (status, _) = send(
+            &ctx.app,
+            "DELETE",
+            &format!("/databases/{id}/webhooks/{hook_id}"),
+            Some(&bob),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _) = send(
+            &ctx.app,
+            "DELETE",
+            &format!("/databases/{id}/webhooks/{hook_id}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, _) = send(
+            &ctx.app,
+            "DELETE",
+            &format!("/databases/{id}/webhooks/{hook_id}"),
+            Some(&alice),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "second delete is 404");
+
+        let _ = std::fs::remove_dir_all(&ctx.dir);
+    }
+
+    #[tokio::test]
+    async fn plan_based_per_user_rate_limit() {
+        let ctx = build_ctx().await;
+        ctx.create_user("ratty", "pw").await;
+        let ratty = ctx.token("ratty", "user");
+
+        let free_qpm = Plan::Free.max_queries_per_minute();
+        let mut hit_429 = false;
+        for _ in 0..free_qpm + 1 {
+            let (status, _) = send(&ctx.app, "GET", "/databases", Some(&ratty), None).await;
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                hit_429 = true;
+            }
+        }
+        assert!(
+            hit_429,
+            "free plan is capped at {} queries/min and should 429",
+            free_qpm
+        );
+
+        let _ = std::fs::remove_dir_all(&ctx.dir);
+    }
+
+    #[tokio::test]
+    async fn setup_creates_hub_database_once() {
+        let ctx = build_ctx().await;
+        ctx.create_user("setup-user", "pw").await;
+        let token = ctx.token("setup-user", "user");
+
+        let (status, json) = send(&ctx.app, "POST", "/setup", Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let first_id = json["database_id"].as_str().unwrap().to_string();
+        assert!(json["seeded"] == true);
+        assert_eq!(json["schema"].as_array().unwrap().len(), 2);
+
+        let (status, json) = send(&ctx.app, "POST", "/setup", Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json["database_id"].as_str().unwrap(),
+            first_id,
+            "setup is idempotent"
+        );
+
+        let _ = std::fs::remove_dir_all(&ctx.dir);
+    }
 }

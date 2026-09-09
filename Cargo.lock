@@ -3380,7 +3380,7 @@ dependencies = [
 
 [[package]]
 name = "turso-service"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "argon2",
  "axum",
@@ -3391,6 +3391,7 @@ dependencies = [
  "dotenvy",
  "hex",
  "hmac",
+ "http-body-util",
  "jsonwebtoken",
  "rand 0.8.7",
  "reqwest",
@@ -3400,6 +3401,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",

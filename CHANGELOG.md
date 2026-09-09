@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## [1.4.0] - 2026-09-08
+
+### Added
+- **Bounded pending deliveries** — `WEBHOOK_PENDING_MAX_ATTEMPTS` (default 10080) and
+  `WEBHOOK_PENDING_TTL_SECS` (default 604800 = 7 days) bound the durable retry queue;
+  exhausted/expired deliveries are dropped with a warning. Legacy pending files without
+  `created_at` parse automatically.
+- **HTTP route integration tests** — axum Router built in-process with tower
+  `TestClient`: auth guards (401 without token / non-admin on admin routes), user login
+  + database lifecycle, 404-vs-401 ordering, ownership isolation, webhook URL/ownership
+  validation, plan-based per-user rate limiting, and one-time `POST /v1/setup`.
+- **Row-level change capture with values** — for `INSERT ... VALUES` statements the
+  webhook `changes[]` entry now carries `"values": { "columns": [...], "rows": [[...]] }`
+  (best effort; `null` otherwise, e.g. `INSERT ... SELECT`).
+- **Config-in-`AppState` refactor** — handlers receive preloaded `Config` via state
+  instead of re-reading dotenv/env per request, keeping tests hermetic and startup fast.
+
+### Changed
+- Test count: 49 → 63.
+
 ## [1.3.0] - 2026-08-31
 
 ### Added
