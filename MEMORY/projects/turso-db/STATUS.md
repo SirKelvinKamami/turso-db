@@ -30,8 +30,8 @@
 
 ## What Is Uncommitted
 
-v1.4.0 batch is staged for this push (Cargo.toml version bump + CHANGELOG + DEPLOY.md,
-TTL queue bounds, integration tests, VALUES capture, config-in-state, MEMORY updates).
+Nothing — v1.4.0 is committed (`b6b045a`), pushed to `origin/main`, CI green, and
+**live on Render** (health endpoint reports `version: 1.4.0`, healthy, 3 users).
 
 ## Blockers / Decisions Needed
 
