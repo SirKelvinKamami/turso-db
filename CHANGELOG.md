@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [1.5.0] - 2026-09-09
+
+### Added
+- **Per-webhook custom retry policy** — webhooks can be registered with
+  `{ "retry": { "max_attempts": N, "backoff_ms": [...] } }` (validated at creation:
+  1..=100 attempts, up to 20 delays each 1..=600000ms). The policy controls the
+  immediate in-memory delivery burst for that hook (default remains 5 attempts with
+  1s/2s/4s/8s); the durable pending queue is still bounded by the global
+  `WEBHOOK_PENDING_MAX_ATTEMPTS`/`WEBHOOK_PENDING_TTL_SECS` env limits. `retry` is
+  echoed back in webhook GET/POST responses.
+- **UPDATE/DELETE value capture** — `changes[]` entries now carry `values` for updates
+  (`{ "set": { "<col>": "<value>" }, "where": "<raw>" }`, WHERE omitted when absent)
+  and deletes (`{ "where": "<raw>" }`; `null` for a full-table `DELETE FROM t`, so
+  consumers can tell a selective delete from a sweep). INSERT captures are unchanged.
+
+### Changed
+- Test count: 63 → 69.
+
 ## [1.4.0] - 2026-09-08
 
 ### Added

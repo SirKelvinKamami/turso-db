@@ -99,10 +99,16 @@ point a webhook at another turso-service instance to forward writes.
 ```powershell
 $headers = @{ Authorization = "Bearer $token" }
 
-# Register (optional secret signs the payload; optional events filter; optional headers)
+# Register (optional secret signs the payload; optional events filter; optional headers;
+# optional custom retry policy)
+$body = '{
+  "url":"https://your-app.example.com/hooks/db-changed",
+  "secret":"pick-a-long-random-string",
+  "headers":{"X-Foo":"bar"},
+  "retry":{"max_attempts":5,"backoff_ms":[1000,2000,4000,8000]}
+}'
 $wh = Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks" -Method Post `
-  -ContentType "application/json" -Headers $headers `
-  -Body '{"url":"https://your-app.example.com/hooks/db-changed","secret":"pick-a-long-random-string","headers":{"X-Foo":"bar"}}'
+  -ContentType "application/json" -Headers $headers -Body $body
 
 # List / remove
 Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks" -Headers $headers
@@ -114,7 +120,9 @@ Delivery details:
 - **Timing:** fire-and-forget after the write commits; the HTTP response is not
   delayed by webhook delivery.
 - **Retries:** a failed or non-2xx delivery is retried with backoff (`1s / 2s / 4s / 8s`,
-  five attempts total) before giving up. All attempts happen off the request path.
+  five attempts total by default) before giving up. Override per webhook with
+  `retry: { "max_attempts": N, "backoff_ms": [...] }` at creation (validated: 1..=100
+  attempts, up to 20 delays each 1..=600000ms). All attempts happen off the request path.
 - **Durable queue:** if all retry attempts still fail, the delivery is persisted to
   `DATA_DIR/pending_deliveries/` and retried again on a background timer (every 60s),
   so it survives process restarts until the receiver comes back. Queued deliveries for a
@@ -136,16 +144,22 @@ Delivery details:
     "changes": [
       { "sql": "INSERT INTO users ...", "op": "insert", "table": "users",
         "values": { "columns": null, "rows": [["1", "x"]] } },
-      { "sql": "UPDATE users ...",      "op": "update", "table": "users" }
+      { "sql": "UPDATE users SET status='paid' WHERE id=7", "op": "update",
+        "table": "users", "values": { "set": { "status": "paid" }, "where": "id=7" } },
+      { "sql": "DELETE FROM users WHERE id=7", "op": "delete",
+        "table": "users", "values": { "where": "id=7" } }
     ],
     "rows_affected": 1
   }
   ```
   `changes` is a best-effort classifier: each entry carries `op` (`insert`/`update`/
   `delete`/`ddl`/`other` or `null` when unrecognized — e.g. a CTE — and
-  `table` when it can be parsed). Insert entries additionally carry `values`
-  (`{ "columns": [...], "rows": [[...]] }` parsed from the `VALUES` clause, or `null`
-  when it can't be parsed, e.g. `INSERT ... SELECT`).
+  `table` when it can be parsed). Entries may also carry `values` captured from the
+  statement: inserts get `{ "columns": [...], "rows": [[...]] }` parsed from the
+  `VALUES` clause; updates get `{ "set": {...}, "where": "<raw>" }` (WHERE omitted when
+  absent); deletes get `{ "where": "<raw>" }` (or `null` for a full-table
+  `DELETE FROM t`). `values` is `null` when a clause can't be parsed (e.g.
+  `INSERT ... SELECT`).
 - **Signature:** if `secret` is set, the request includes
   `X-Turso-Signature: sha256=<lowercase hex HMAC-SHA256 of the raw body>`.
   Verify on the receiver side for authenticity (see `scripts/webhook-receiver.js`).

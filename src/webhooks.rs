@@ -22,6 +22,29 @@ const DEFAULT_BACKOFF: [Duration; 4] = [
 const PENDING_TTL_DEFAULT_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
 const PENDING_MAX_ATTEMPTS_DEFAULT: u32 = 10080; // one retry tick per 60s over 7 days
 
+/// Per-webhook retry policy. `max_attempts` is the total number of delivery attempts in
+/// the immediate in-memory burst (including the first); `backoff_ms` lists the delays
+/// applied before each subsequent attempt. If the list is shorter than `max_attempts - 1`,
+/// extra attempts reuse the request timeout spacing (no extra delay) — or simply cap the
+/// burst by providing exactly `max_attempts - 1` entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub backoff_ms: Vec<u64>,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: (DEFAULT_BACKOFF.len() as u32) + 1,
+            backoff_ms: DEFAULT_BACKOFF
+                .iter()
+                .map(|d| d.as_millis() as u64)
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Webhook {
     pub id: String,
@@ -32,6 +55,8 @@ pub struct Webhook {
     pub events: Vec<String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub retry: Option<RetryPolicy>,
     pub created_at: String,
 }
 
@@ -42,6 +67,24 @@ fn default_events() -> Vec<String> {
 impl Webhook {
     pub fn matches(&self, event: &str) -> bool {
         self.events.iter().any(|e| e == "*" || e == event)
+    }
+
+    /// Delays to sleep between in-memory delivery attempts for this hook.
+    pub fn in_memory_delays(&self) -> Vec<Duration> {
+        let policy = self.retry.clone().unwrap_or_default();
+        let extra = policy.max_attempts.saturating_sub(1) as usize;
+        policy
+            .backoff_ms
+            .iter()
+            .take(extra)
+            .map(|ms| Duration::from_millis(*ms))
+            .collect()
+    }
+
+    /// Total attempts made in a single in-memory burst before failing over to the durable
+    /// pending queue.
+    pub fn burst_attempts(&self) -> u32 {
+        1 + self.in_memory_delays().len() as u32
     }
 }
 
@@ -217,18 +260,21 @@ impl WebhookStore {
         secret: Option<String>,
         events: Option<Vec<String>>,
         headers: Option<HashMap<String, String>>,
+        retry: Option<RetryPolicy>,
     ) -> Result<Webhook, String> {
         validate_url(url)?;
         let events = events.unwrap_or_else(default_events);
         validate_events(&events)?;
         let headers = headers.unwrap_or_default();
         validate_headers(&headers)?;
+        validate_retry(retry.as_ref())?;
         let hook = Webhook {
             id: Uuid::new_v4().to_string(),
             url: url.to_string(),
             secret: secret.unwrap_or_default(),
             events,
             headers,
+            retry,
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         self.hooks
@@ -325,7 +371,7 @@ impl WebhookStore {
             db_id,
             event,
             hook: hook.clone(),
-            attempts: DEFAULT_BACKOFF.len() as u32 + 1,
+            attempts: hook.burst_attempts(),
             payload: body,
             created_at: clock_now_rfc3339(),
         };
@@ -379,7 +425,7 @@ impl WebhookStore {
                     d.payload.clone(),
                     &d.db_id,
                     &d.event,
-                    &DEFAULT_BACKOFF,
+                    &d.hook.in_memory_delays(),
                 )
                 .await;
             if delivered {
@@ -408,7 +454,8 @@ impl WebhookStore {
     }
 
     async fn deliver(&self, hook: &Webhook, body: Vec<u8>, db_id: &str, event: &str) -> bool {
-        self.deliver_with_backoff(hook, body, db_id, event, &DEFAULT_BACKOFF)
+        let delays = hook.in_memory_delays();
+        self.deliver_with_backoff(hook, body, db_id, event, &delays)
             .await
     }
 
@@ -526,6 +573,31 @@ pub fn validate_headers(headers: &HashMap<String, String>) -> Result<(), String>
             .map_err(|_| format!("invalid webhook header name '{name}'"))?;
         reqwest::header::HeaderValue::from_str(value)
             .map_err(|_| format!("invalid webhook header value for '{name}'"))?;
+    }
+    Ok(())
+}
+
+pub fn validate_retry(retry: Option<&RetryPolicy>) -> Result<(), String> {
+    let Some(p) = retry else {
+        return Ok(());
+    };
+    if p.max_attempts == 0 || p.max_attempts > 100 {
+        return Err("retry.max_attempts must be between 1 and 100".to_string());
+    }
+    if p.backoff_ms.len() > 20 {
+        return Err("retry.backoff_ms must have at most 20 entries".to_string());
+    }
+    const MAX_BACKOFF_MS: u64 = 600_000; // 10 minutes
+    for (i, ms) in p.backoff_ms.iter().enumerate() {
+        if *ms == 0 {
+            return Err(format!("retry.backoff_ms[{}] must be greater than 0", i));
+        }
+        if *ms > MAX_BACKOFF_MS {
+            return Err(format!(
+                "retry.backoff_ms[{}] exceeds {}ms max",
+                i, MAX_BACKOFF_MS
+            ));
+        }
     }
     Ok(())
 }
@@ -703,8 +775,11 @@ pub fn change_events(statements: &[String]) -> Value {
             .map(|sql| {
                 let (op, table) = classify_write(sql);
                 let mut ev = json!({ "sql": sql, "op": op, "table": table });
-                if op == Some("insert") {
-                    ev["values"] = capture_insert_values(sql);
+                match op {
+                    Some("insert") => ev["values"] = capture_insert_values(sql),
+                    Some("update") => ev["values"] = capture_update_details(sql),
+                    Some("delete") => ev["values"] = capture_delete_details(sql),
+                    _ => {}
                 }
                 ev
             })
@@ -728,6 +803,168 @@ pub fn capture_insert_values(sql: &str) -> Value {
     }
     let columns = insert_columns(s, &lower);
     json!({ "columns": columns, "rows": rows })
+}
+
+/// Best-effort capture of a DELETE statement's WHERE clause as `{ "where": "<raw>" }`.
+/// Returns null when there is no parseable WHERE (e.g. a full-table `DELETE FROM t`), so
+/// consumers can distinguish "matched a subset" from "may have swept the whole table".
+pub fn capture_delete_details(sql: &str) -> Value {
+    let s = strip_comments(sql);
+    let lower = s.to_ascii_lowercase();
+    let Some(rest) = after_keyword(s, &lower, "from") else {
+        return Value::Null;
+    };
+    capture_where_suffix(rest)
+}
+
+/// Best-effort capture of an UPDATE statement's SET assignments plus optional WHERE as
+/// `{ "set": { "<col>": "<value>", ... }, "where": "<raw>" }`. `where` is omitted when
+/// absent; returns null when neither is parseable.
+pub fn capture_update_details(sql: &str) -> Value {
+    let s = strip_comments(sql);
+    let lower = s.to_ascii_lowercase();
+    let Some(after_set) = after_keyword(s, &lower, "set") else {
+        return Value::Null;
+    };
+    let sec_lower = after_set.to_ascii_lowercase();
+    let (assign_src, where_raw) = match keyword_pos(&sec_lower, "where") {
+        Some(pos) => (
+            &after_set[..pos],
+            Some(after_set[pos + "where".len()..].trim().to_string()),
+        ),
+        None => (after_set, None),
+    };
+    let set = parse_set_assignments(assign_src);
+    if set.is_empty() && where_raw.as_deref().is_none_or(str::is_empty) {
+        return Value::Null;
+    }
+    let mut obj = serde_json::Map::new();
+    if !set.is_empty() {
+        obj.insert("set".to_string(), Value::Object(set));
+    }
+    if let Some(w) = where_raw.filter(|w| !w.is_empty()) {
+        obj.insert("where".to_string(), json!(w));
+    }
+    Value::Object(obj)
+}
+
+/// WHERE-clause raw suffix after a `from`/`delete from` header. Returns null when there is
+/// no non-empty WHERE.
+fn capture_where_suffix(rest: &str) -> Value {
+    let rest_lower = rest.to_ascii_lowercase();
+    match keyword_pos(&rest_lower, "where") {
+        Some(pos) => {
+            let w = rest[pos + "where".len()..].trim();
+            if w.is_empty() {
+                Value::Null
+            } else {
+                json!({ "where": w })
+            }
+        }
+        None => Value::Null,
+    }
+}
+
+/// Parse `col = expr, col2 = expr, ...` into an object map, splitting only on top-level
+/// commas (respecting quotes and nested parentheses) and top-level `=`.
+fn parse_set_assignments(s: &str) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for raw in split_top_level(s, ',') {
+        let part = raw.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Some(eq) = find_top_level(part, '=') else {
+            continue;
+        };
+        let col = take_ident(&part[..eq]).0.unwrap_or_default();
+        let val = normalize_value(&part[eq + 1..]);
+        if !col.is_empty() {
+            out.insert(col, json!(val));
+        }
+    }
+    out
+}
+
+/// Index of the first un-nested (parenthesis/bracket depth 0, outside quotes) occurrence
+/// of `target`, or None.
+fn find_top_level(s: &str, target: char) -> Option<usize> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut depth = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '\'' if !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_single && !in_double => in_backtick = !in_backtick,
+            '(' | '[' if !in_single && !in_double && !in_backtick => depth += 1,
+            ')' | ']' if !in_single && !in_double && !in_backtick => depth -= 1,
+            c2 if c2 == target && depth == 0 && !in_single && !in_double && !in_backtick => {
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split on `sep` only at nesting depth 0, outside quoted strings.
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut i = 0usize;
+    while i < n {
+        let c = chars[i];
+        match c {
+            '\'' if !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_single && !in_double => in_backtick = !in_backtick,
+            '(' | '[' if !in_single && !in_double && !in_backtick => depth += 1,
+            ')' | ']' if !in_single && !in_double && !in_backtick => depth -= 1,
+            c2 if c2 == sep && depth == 0 && !in_single && !in_double && !in_backtick => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+/// Index of the first word-boundary match of `kw` within `lower` (which must be the
+/// lowercase form of the string being searched), matching `after_keyword` boundary rules.
+fn keyword_pos(lower: &str, kw: &str) -> Option<usize> {
+    let mut idx = 0;
+    while let Some(rel) = lower[idx..].find(kw) {
+        let start = idx + rel;
+        let end = start + kw.len();
+        let before_ok = start == 0
+            || !lower[..start]
+                .chars()
+                .next_back()
+                .unwrap()
+                .is_alphanumeric();
+        let after_ok = lower[end..]
+            .chars()
+            .next()
+            .map(|c| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return Some(start);
+        }
+        idx = end;
+    }
+    None
 }
 
 /// Tokenizer for `(v1, v2), (v3, v4)` tuples following a VALUES keyword. Handles single
@@ -990,15 +1227,67 @@ mod tests {
     }
 
     #[test]
-    fn change_events_attach_values_only_for_inserts() {
+    fn change_events_attach_values_per_op() {
         let events = change_events(&[
             "INSERT INTO logs (msg) VALUES ('hi')".into(),
-            "UPDATE logs SET msg = 'hi' WHERE id = 1".into(),
+            "UPDATE logs SET msg = 'bye' WHERE id = 1".into(),
+            "DELETE FROM logs WHERE id = 2".into(),
         ]);
         assert_eq!(events[0]["op"], "insert");
         assert_eq!(events[0]["values"]["rows"], serde_json::json!([["hi"]]));
         assert_eq!(events[1]["op"], "update");
-        assert!(events[1].get("values").is_none(), "updates carry no values");
+        assert_eq!(
+            events[1]["values"],
+            serde_json::json!({ "set": { "msg": "bye" }, "where": "id = 1" })
+        );
+        assert_eq!(events[2]["op"], "delete");
+        assert_eq!(
+            events[2]["values"],
+            serde_json::json!({ "where": "id = 2" })
+        );
+    }
+
+    #[test]
+    fn captures_update_set_and_where() {
+        let v = capture_update_details(
+            "UPDATE tasks SET status = 'done', priority = 2 WHERE id = 1 AND project = 'x'",
+        );
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "set": { "status": "done", "priority": "2" },
+                "where": "id = 1 AND project = 'x'"
+            })
+        );
+    }
+
+    #[test]
+    fn captures_update_without_where_and_function_values() {
+        let v = capture_update_details("UPDATE OR IGNORE cache SET a = upper('x'), b = f(1, 2)");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "set": { "a": "upper('x')", "b": "f(1, 2)" }
+            })
+        );
+        assert!(v.get("where").is_none(), "no WHERE → key omitted");
+    }
+
+    #[test]
+    fn captures_delete_where_or_null() {
+        assert_eq!(
+            capture_delete_details("DELETE FROM projects WHERE id = 2"),
+            serde_json::json!({ "where": "id = 2" })
+        );
+        assert_eq!(
+            capture_delete_details("DELETE FROM t"),
+            serde_json::Value::Null,
+            "table sweep has no WHERE to report"
+        );
+        assert_eq!(
+            capture_update_details("INSERT INTO t (a) VALUES (1)"),
+            serde_json::Value::Null
+        );
     }
 
     #[test]
@@ -1009,6 +1298,7 @@ mod tests {
             secret: String::new(),
             events: vec!["*".into()],
             headers: HashMap::new(),
+            retry: None,
             created_at: String::new(),
         };
         let write_only = Webhook {
@@ -1017,6 +1307,7 @@ mod tests {
             secret: String::new(),
             events: vec![EVENT_WRITE.into()],
             headers: HashMap::new(),
+            retry: None,
             created_at: String::new(),
         };
         let other = Webhook {
@@ -1025,6 +1316,7 @@ mod tests {
             secret: String::new(),
             events: vec!["insert".into()],
             headers: HashMap::new(),
+            retry: None,
             created_at: String::new(),
         };
         assert!(wildcard.matches(EVENT_WRITE));
@@ -1059,6 +1351,63 @@ mod tests {
     }
 
     #[test]
+    fn retry_policy_validation_and_defaults() {
+        let default = RetryPolicy::default();
+        assert_eq!(default.max_attempts, 5);
+        assert_eq!(default.backoff_ms, vec![1000, 2000, 4000, 8000]);
+        assert!(validate_retry(Some(&default)).is_ok());
+        assert!(validate_retry(None).is_ok());
+
+        let bad_max = RetryPolicy {
+            max_attempts: 0,
+            backoff_ms: vec![1],
+        };
+        assert!(validate_retry(Some(&bad_max)).is_err());
+        let too_many = RetryPolicy {
+            max_attempts: 5,
+            backoff_ms: vec![1; 21],
+        };
+        assert!(validate_retry(Some(&too_many)).is_err());
+        let zero_delay = RetryPolicy {
+            max_attempts: 5,
+            backoff_ms: vec![0],
+        };
+        assert!(validate_retry(Some(&zero_delay)).is_err());
+        let huge_delay = RetryPolicy {
+            max_attempts: 5,
+            backoff_ms: vec![999_999],
+        };
+        assert!(validate_retry(Some(&huge_delay)).is_err());
+    }
+
+    #[test]
+    fn hook_burst_respects_policy() {
+        let hook = Webhook {
+            id: "1".into(),
+            url: "https://x.test".into(),
+            secret: String::new(),
+            events: vec![EVENT_WRITE.into()],
+            headers: HashMap::new(),
+            retry: Some(RetryPolicy {
+                max_attempts: 3,
+                backoff_ms: vec![50, 100, 200],
+            }),
+            created_at: String::new(),
+        };
+        let delays = hook.in_memory_delays();
+        assert_eq!(delays.len(), 2, "capped at max_attempts - 1");
+        assert_eq!(delays[0], Duration::from_millis(50));
+        assert_eq!(delays[1], Duration::from_millis(100));
+        assert_eq!(hook.burst_attempts(), 3);
+
+        let no_policy = Webhook {
+            retry: None,
+            ..hook.clone()
+        };
+        assert_eq!(no_policy.burst_attempts(), 5, "default = 1 + 4 backoffs");
+    }
+
+    #[test]
     fn store_roundtrip_persists() {
         let dir = std::env::temp_dir().join(format!("turso-wb-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1070,6 +1419,7 @@ mod tests {
                 "db-1",
                 "https://example.com/h",
                 Some("s3cret".into()),
+                None,
                 None,
                 None,
             )
@@ -1154,6 +1504,7 @@ mod tests {
                 Some("s3cret".into()),
                 None,
                 Some(extra),
+                None,
             )
             .unwrap();
         store.dispatch(
@@ -1241,6 +1592,7 @@ mod tests {
             secret: String::new(),
             events: vec![EVENT_WRITE.into()],
             headers: HashMap::new(),
+            retry: None,
             created_at: String::new(),
         };
         let backoffs = [Duration::from_millis(10), Duration::from_millis(10)];
@@ -1287,6 +1639,7 @@ mod tests {
             secret: String::new(),
             events: vec![EVENT_WRITE.into()],
             headers: HashMap::new(),
+            retry: None,
             created_at: String::new(),
         };
         let backoffs = [Duration::from_millis(5), Duration::from_millis(5)];
@@ -1336,6 +1689,7 @@ mod tests {
             secret: String::new(),
             events: vec![EVENT_WRITE.into()],
             headers: HashMap::new(),
+            retry: None,
             created_at: String::new(),
         };
         store1.persist_pending(&hook1, "db-q".into(), EVENT_WRITE.into(), b"{}".to_vec());
@@ -1375,6 +1729,7 @@ mod tests {
                 secret: "s".into(),
                 events: vec![EVENT_WRITE.into()],
                 headers: HashMap::new(),
+                retry: None,
                 created_at: "now".into(),
             },
             attempts: 5,
@@ -1415,6 +1770,7 @@ mod tests {
                 secret: "s".into(),
                 events: vec![EVENT_WRITE.into()],
                 headers: HashMap::new(),
+                retry: None,
                 created_at: "now".into(),
             },
             attempts: 5,

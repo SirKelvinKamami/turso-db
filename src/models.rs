@@ -109,6 +109,8 @@ pub struct CreateWebhookRequest {
     pub events: Option<Vec<String>>,
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub retry: Option<crate::webhooks::RetryPolicy>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +118,7 @@ pub struct WebhookResponse {
     pub id: String,
     pub url: String,
     pub events: Vec<String>,
+    pub retry: Option<crate::webhooks::RetryPolicy>,
     pub created_at: String,
 }
 

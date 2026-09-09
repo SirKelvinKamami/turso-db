@@ -4,6 +4,56 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-09-09 — v1.5.0: per-webhook retry policy, UPDATE/DELETE value capture
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Work the next feature candidates after v1.4.0 shipped: per-hook custom retry policy
+(+ per-delivery retry config), UPDATE/DELETE row-level capture alongside the INSERT
+VALUES work. (Full libsql replica sync deferred — needs its own planning session.)
+
+### What was built (`src/webhooks.rs`, `src/routes.rs`, `src/models.rs`)
+- **Per-webhook retry policy:** new `RetryPolicy { max_attempts: u32, backoff_ms: Vec<u64> }`
+  (serde Serialize/Deserialize, `Default` = 5 attempts / 1s,2s,4s,8s) as an optional
+  `Webhook.retry` field (`#[serde(default)]`, legacy files parse). `WebhookStore::add`
+  gained a `retry` param validated by `validate_retry` (max_attempts 1..=100, at most 20
+  delays each 1..=600000ms). `Webhook.in_memory_delays()` builds the per-hook backoff
+  schedule capped at `max_attempts - 1`; `burst_attempts()` seeds the pending queue.
+  `deliver`, `retry_pending_once`, and `persist_pending` now use the hook policy
+  instead of the hardcoded `DEFAULT_BACKOFF`. `CreateWebhookRequest.retry` +
+  `WebhookResponse.retry` echo it over the API. Pending-queue bounds (env TTL/max)
+  intentionally remain global.
+- **UPDATE/DELETE value capture:** new `capture_update_details` (`{ set: {col: val},
+  where: "<raw>" }`, WHERE omitted when absent) and `capture_delete_details`
+  (`{ where: "<raw>" }`, null for a full-table `DELETE FROM t`). New tokenizer
+  helpers `split_top_level` / `find_top_level` (quote + paren/bracket depth aware) and
+  `keyword_pos` (word-boundary keyword index, matching `after_keyword` semantics).
+  `change_events` attaches `values` for insert/update/delete. Fixed a real bug during
+  tests: `find_top_level` indices were computed on the trimmed part but applied to the
+  untrimmed slice → values came back prefixed with `= `; rebinding `part` to the
+  trimmed slice fixed it.
+
+### Tests / verification
+- `cargo test --all-targets` → **69 pass** (was 63). New: update/delete capture
+  suites, `change_events_attach_values_per_op`, retry validation + burst, and the
+  `webhooks_accept_custom_retry_policy` integration test (201 with policy echoed, 400
+  on bad max_attempts, GET roundtrip).
+- `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Notes / limitations
+- Values capture is best-effort statement parsing (WHERE text is raw, no expression
+  evaluation); UPDATE captures the literal SET expressions, not post-execution rows.
+- Retry policy governs the immediate burst only; durable pending retries still follow
+  the global `WEBHOOK_PENDING_*` env bounds.
+
+### Files changed
+`src/webhooks.rs`, `src/routes.rs`, `src/models.rs`, `Cargo.toml`, `Cargo.lock`,
+`CHANGELOG.md`, `DEPLOY.md`, MEMORY files. Push = `git push origin main` (Render
+auto-deploys via CI hook).
+
+---
+
 ## 2026-09-08 — v1.4.0: bounded retry queue, HTTP integration tests, INSERT VALUES capture, config-in-state
 
 **Model/session:** opencode (big-pickle)

@@ -595,6 +595,7 @@ async fn create_webhook(
             payload.secret,
             payload.events,
             payload.headers,
+            payload.retry,
         )
         .map_err(|e| {
             (
@@ -611,6 +612,7 @@ async fn create_webhook(
             id: hook.id,
             url: hook.url,
             events: hook.events,
+            retry: hook.retry,
             created_at: hook.created_at,
         }),
     ))
@@ -630,6 +632,7 @@ async fn list_webhooks(
             id: h.id.clone(),
             url: h.url.clone(),
             events: h.events.clone(),
+            retry: h.retry.clone(),
             created_at: h.created_at.clone(),
         })
         .collect();
@@ -1460,6 +1463,70 @@ mod integration_tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "second delete is 404");
+
+        let _ = std::fs::remove_dir_all(&ctx.dir);
+    }
+
+    #[tokio::test]
+    async fn webhooks_accept_custom_retry_policy() {
+        let ctx = build_ctx().await;
+        ctx.create_user("alice", "pw-a").await;
+        let alice = ctx.token("alice", "user");
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            "/databases",
+            Some(&alice),
+            Some(serde_json::json!({"name": "retry-db"})),
+        )
+        .await;
+        let id = db_id_from_create(status, &json);
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            Some(serde_json::json!({
+                "url": "https://alice.example.com/h",
+                "retry": { "max_attempts": 3, "backoff_ms": [100, 200] }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(json["retry"]["max_attempts"], 3);
+        assert_eq!(json["retry"]["backoff_ms"], serde_json::json!([100, 200]));
+
+        let (status, _) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            Some(serde_json::json!({
+                "url": "https://alice.example.com/h2",
+                "retry": { "max_attempts": 0, "backoff_ms": [100] }
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "max_attempts must be valid"
+        );
+
+        let (status, json) = send(
+            &ctx.app,
+            "GET",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let hooks = json.as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["retry"]["max_attempts"], 3);
 
         let _ = std::fs::remove_dir_all(&ctx.dir);
     }
