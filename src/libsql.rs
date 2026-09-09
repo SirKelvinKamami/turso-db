@@ -326,9 +326,15 @@ pub async fn pipeline_handler(
             .find(|(id, _)| *id == db_id)
             .map(|(_, entry)| (entry.name.clone(), entry.owner.clone()))
             .unwrap_or_else(|| (db_id.clone(), user.username.clone()));
-        state
-            .webhooks
-            .dispatch(&db_id, &db_name, &owner, EVENT_WRITE, statements, total);
+        state.webhooks.dispatch(
+            &db_id,
+            &db_name,
+            &owner,
+            EVENT_WRITE,
+            statements,
+            total,
+            Vec::new(),
+        );
     }
 
     Ok(Json(json!({ "results": results })))

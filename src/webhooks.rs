@@ -108,6 +108,33 @@ fn clock_now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Columnar snapshot of a statement's affected rows (stringified like query output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RowFrame {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+/// True change-frame for one write statement, captured around the write itself:
+/// `before` holds the rows matched by the statement's WHERE clause (for UPDATE/DELETE)
+/// and `after` holds the rows produced by `RETURNING rowid, *` (for INSERT/UPDATE).
+/// `None` fields mean the snapshot could not be produced (e.g. WITHOUT ROWID tables).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StatementFrame {
+    pub op: Option<String>,
+    pub table: Option<String>,
+    pub before: Option<RowFrame>,
+    pub after: Option<RowFrame>,
+}
+
+impl StatementFrame {
+    /// Shallow non-empty check so payloads skip empty frames.
+    pub fn has_rows(&self) -> bool {
+        self.before.as_ref().is_some_and(|f| !f.rows.is_empty())
+            || self.after.as_ref().is_some_and(|f| !f.rows.is_empty())
+    }
+}
+
 #[derive(Clone)]
 pub struct WebhookStore {
     path: String,
@@ -285,6 +312,59 @@ impl WebhookStore {
         Ok(hook)
     }
 
+    /// Partial update of an existing webhook. All fields validated before any mutation;
+    /// a failing validation leaves the hook untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(
+        &self,
+        db_id: &str,
+        hook_id: &str,
+        url: Option<&str>,
+        secret: Option<Option<String>>,
+        events: Option<&[String]>,
+        headers: Option<&HashMap<String, String>>,
+        retry: Option<Option<RetryPolicy>>,
+    ) -> Result<Webhook, String> {
+        let mut hooks = self
+            .hooks
+            .get_mut(db_id)
+            .ok_or_else(|| "webhook not found".to_string())?;
+        let Some(hook) = hooks.iter_mut().find(|h| h.id == hook_id) else {
+            return Err("webhook not found".to_string());
+        };
+        if let Some(url) = url {
+            validate_url(url)?;
+        }
+        if let Some(events) = events {
+            validate_events(events)?;
+        }
+        if let Some(headers) = headers {
+            validate_headers(headers)?;
+        }
+        if let Some(retry) = &retry {
+            validate_retry(retry.as_ref())?;
+        }
+        if let Some(url) = url {
+            hook.url = url.to_string();
+        }
+        if let Some(secret) = secret {
+            hook.secret = secret.unwrap_or_default();
+        }
+        if let Some(events) = events {
+            hook.events = events.to_vec();
+        }
+        if let Some(headers) = headers {
+            hook.headers = headers.clone();
+        }
+        if let Some(retry) = retry {
+            hook.retry = retry;
+        }
+        let updated = hook.clone();
+        drop(hooks);
+        self.save();
+        Ok(updated)
+    }
+
     pub fn remove(&self, db_id: &str, hook_id: &str) -> bool {
         let mut removed = false;
         if let Some(mut hooks) = self.hooks.get_mut(db_id) {
@@ -335,6 +415,7 @@ impl WebhookStore {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         &self,
         db_id: &str,
@@ -343,10 +424,19 @@ impl WebhookStore {
         event: &str,
         statements: Vec<String>,
         rows_affected: u64,
+        frames: Vec<StatementFrame>,
     ) {
         let hooks = self.list(db_id);
         let receivers: Vec<Webhook> = hooks.into_iter().filter(|h| h.matches(event)).collect();
-        let body = build_payload(db_id, db_name, owner, event, &statements, rows_affected);
+        let body = build_payload(
+            db_id,
+            db_name,
+            owner,
+            event,
+            &statements,
+            rows_affected,
+            &frames,
+        );
         let raw = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
 
         for hook in receivers {
@@ -768,11 +858,12 @@ fn skip_create_qualifiers(s: &str) -> Option<String> {
     }
 }
 
-pub fn change_events(statements: &[String]) -> Value {
+pub fn change_events(statements: &[String], frames: Option<&[StatementFrame]>) -> Value {
     Value::Array(
         statements
             .iter()
-            .map(|sql| {
+            .enumerate()
+            .map(|(i, sql)| {
                 let (op, table) = classify_write(sql);
                 let mut ev = json!({ "sql": sql, "op": op, "table": table });
                 match op {
@@ -780,6 +871,9 @@ pub fn change_events(statements: &[String]) -> Value {
                     Some("update") => ev["values"] = capture_update_details(sql),
                     Some("delete") => ev["values"] = capture_delete_details(sql),
                     _ => {}
+                }
+                if let Some(frame) = frames.and_then(|f| f.get(i)).filter(|f| f.has_rows()) {
+                    ev["frame"] = json!(frame);
                 }
                 ev
             })
@@ -863,6 +957,69 @@ fn capture_where_suffix(rest: &str) -> Value {
         }
         None => Value::Null,
     }
+}
+
+/// Raw WHERE-clause text for an update/delete statement, used by change-framing to
+/// snapshot the matched rows before executing the write.
+pub(crate) fn where_text_for(sql: &str, op: &str) -> Option<String> {
+    let s = strip_comments(sql);
+    let lower = s.to_ascii_lowercase();
+    match op {
+        "delete" => {
+            let rest = after_keyword(s, &lower, "from")?;
+            capture_where_suffix(rest)
+                .as_object()
+                .and_then(|o| o.get("where"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        }
+        "update" => {
+            let rest = after_keyword(s, &lower, "set")?;
+            find_top_level_word(rest, "where")
+                .map(|pos| rest[pos + "where".len()..].trim().to_string())
+        }
+        _ => None,
+    }
+}
+
+/// First occurrence of the word `kw` at parenthesis depth 0 and outside quoted strings
+/// (case-insensitive, word-boundary guarded). Unlike `keyword_pos`, this skips matches
+/// inside string literals and subqueries/parentheses.
+fn find_top_level_word(s: &str, kw: &str) -> Option<usize> {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut depth = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut i = 0usize;
+    while i < n {
+        let c = chars[i];
+        match c {
+            '\'' if !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_single && !in_double => in_backtick = !in_backtick,
+            '(' | '[' if !in_single && !in_double && !in_backtick => depth += 1,
+            ')' | ']' if !in_single && !in_double && !in_backtick => depth -= 1,
+            _ => {}
+        }
+        if c.is_ascii_alphabetic()
+            && depth == 0
+            && !in_single
+            && !in_double
+            && !in_backtick
+            && s[i..]
+                .get(..kw.len())
+                .is_some_and(|w| w.eq_ignore_ascii_case(kw))
+            && (i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_'))
+            && (i + kw.len() >= n
+                || !(chars[i + kw.len()].is_alphanumeric() || chars[i + kw.len()] == '_'))
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Parse `col = expr, col2 = expr, ...` into an object map, splitting only on top-level
@@ -1095,6 +1252,7 @@ pub fn build_payload(
     event: &str,
     statements: &[String],
     rows_affected: u64,
+    frames: &[StatementFrame],
 ) -> serde_json::Value {
     serde_json::json!({
         "event": event,
@@ -1104,7 +1262,7 @@ pub fn build_payload(
         "database": { "id": db_id, "name": db_name },
         "owner": owner,
         "statements": statements,
-        "changes": change_events(statements),
+        "changes": change_events(statements, Some(frames)),
         "rows_affected": rows_affected,
     })
 }
@@ -1228,11 +1386,14 @@ mod tests {
 
     #[test]
     fn change_events_attach_values_per_op() {
-        let events = change_events(&[
-            "INSERT INTO logs (msg) VALUES ('hi')".into(),
-            "UPDATE logs SET msg = 'bye' WHERE id = 1".into(),
-            "DELETE FROM logs WHERE id = 2".into(),
-        ]);
+        let events = change_events(
+            &[
+                "INSERT INTO logs (msg) VALUES ('hi')".into(),
+                "UPDATE logs SET msg = 'bye' WHERE id = 1".into(),
+                "DELETE FROM logs WHERE id = 2".into(),
+            ],
+            None,
+        );
         assert_eq!(events[0]["op"], "insert");
         assert_eq!(events[0]["values"]["rows"], serde_json::json!([["hi"]]));
         assert_eq!(events[1]["op"], "update");
@@ -1448,6 +1609,7 @@ mod tests {
             EVENT_WRITE,
             &["INSERT INTO t VALUES (3)".into()],
             2,
+            &[],
         );
         assert_eq!(p["event"], "write");
         assert_eq!(p["database"]["id"], "db-1");
@@ -1459,6 +1621,38 @@ mod tests {
         assert_eq!(p["rows_affected"], 2);
         assert_eq!(p["schema_version"], 1);
         assert!(p["delivery_id"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn payload_includes_frames_when_present() {
+        let frame = StatementFrame {
+            op: Some("update".to_string()),
+            table: Some("t".to_string()),
+            before: Some(RowFrame {
+                columns: vec!["id".into(), "name".into()],
+                rows: vec![vec!["1".into(), "old".into()]],
+            }),
+            after: Some(RowFrame {
+                columns: vec!["id".into(), "name".into()],
+                rows: vec![vec!["1".into(), "new".into()]],
+            }),
+        };
+        let empty = StatementFrame::default();
+        let p = build_payload(
+            "db-1",
+            "mydb",
+            "alice",
+            EVENT_WRITE,
+            &["UPDATE t SET name='new' WHERE id=1".into()],
+            1,
+            &[frame, empty],
+        );
+        let ch = &p["changes"][0];
+        assert_eq!(ch["op"], "update");
+        assert_eq!(ch["frame"]["before"]["rows"][0][0], "1");
+        assert_eq!(ch["frame"]["before"]["rows"][0][1], "old");
+        assert_eq!(ch["frame"]["after"]["rows"][0][1], "new");
+        assert_eq!(p["changes"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1514,6 +1708,7 @@ mod tests {
             EVENT_WRITE,
             vec!["INSERT INTO t VALUES (1)".into()],
             1,
+            Vec::new(),
         );
 
         let (headers, body) = tokio::time::timeout(Duration::from_secs(5), rx.recv())

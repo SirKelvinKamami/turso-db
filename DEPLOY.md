@@ -113,6 +113,12 @@ $wh = Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webho
 # List / remove
 Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks" -Headers $headers
 Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks/$($wh.id)" -Method Delete -Headers $headers
+
+# Patch (edit url/events/headers in place; omit a key to leave it, JSON null clears it)
+$body = '{"events":["*"],"headers":{"X-Foo":"baz"}}'
+Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($db.id)/webhooks/$($wh.id)" -Method Patch `
+  -ContentType "application/json" -Headers $headers -Body $body
+# `secret` / `retry` follow the same rule: `{"secret":null}` clears, `{"secret":"new"}` sets.
 ```
 
 Delivery details:
@@ -143,11 +149,20 @@ Delivery details:
     "statements": ["INSERT INTO users ..."],
     "changes": [
       { "sql": "INSERT INTO users ...", "op": "insert", "table": "users",
-        "values": { "columns": null, "rows": [["1", "x"]] } },
+        "values": { "columns": null, "rows": [["1", "x"]] },
+        "frame": { "op": "insert", "table": "users",
+          "before": null,
+          "after": { "columns": ["rowid", "id", "name"], "rows": [["1", "1", "x"]] } } },
       { "sql": "UPDATE users SET status='paid' WHERE id=7", "op": "update",
-        "table": "users", "values": { "set": { "status": "paid" }, "where": "id=7" } },
+        "table": "users", "values": { "set": { "status": "paid" }, "where": "id=7" },
+        "frame": { "op": "update", "table": "users",
+          "before": { "columns": ["rowid", "id", "status"], "rows": [["7", "7", "open"]] },
+          "after": { "columns": ["rowid", "id", "status"], "rows": [["7", "7", "paid"]] } } },
       { "sql": "DELETE FROM users WHERE id=7", "op": "delete",
-        "table": "users", "values": { "where": "id=7" } }
+        "table": "users", "values": { "where": "id=7" },
+        "frame": { "op": "delete", "table": "users",
+          "before": { "columns": ["rowid", "id", "status"], "rows": [["7", "7", "paid"]] },
+          "after": null } }
     ],
     "rows_affected": 1
   }
@@ -160,6 +175,15 @@ Delivery details:
   absent); deletes get `{ "where": "<raw>" }` (or `null` for a full-table
   `DELETE FROM t`). `values` is `null` when a clause can't be parsed (e.g.
   `INSERT ... SELECT`).
+  Since v1.6.0 entries also carry `frame` — real row snapshots taken around the
+  write. Write batches run in a transaction (`BEGIN IMMEDIATE`…`COMMIT`/`ROLLBACK`),
+  each statement's matched rows are read BEFORE the write (`SELECT rowid, * …
+  WHERE <original where>`) and the written rows are read AFTER via
+  `RETURNING rowid, *`. `before` is `null` for INSERT, `after` is `null` for DELETE.
+  Frames are capped at 100 rows per statement and are skipped entirely when the
+  engine can't produce them (WITHOUT ROWID tables, no `RETURNING` support), in which
+  case delivery falls back to the plain execution result. Batch atomicity is a bonus
+  of the same change: a failed statement rolls back the whole batch.
 - **Signature:** if `secret` is set, the request includes
   `X-Turso-Signature: sha256=<lowercase hex HMAC-SHA256 of the raw body>`.
   Verify on the receiver side for authenticity (see `scripts/webhook-receiver.js`).

@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -62,7 +62,10 @@ pub fn api_routes(
             "/databases/{id}/webhooks",
             get(list_webhooks).post(create_webhook),
         )
-        .route("/databases/{id}/webhooks/{hook_id}", delete(delete_webhook))
+        .route(
+            "/databases/{id}/webhooks/{hook_id}",
+            patch(update_webhook).delete(delete_webhook),
+        )
         .route("/sync/{id}", post(sync_database))
         .route("/setup", post(setup_database))
         .route("/rate-limit", get(rate_limit_info))
@@ -639,6 +642,53 @@ async fn list_webhooks(
     Ok(Json(resp))
 }
 
+async fn update_webhook(
+    state: State<AppState>,
+    headers: HeaderMap,
+    Path((id, hook_id)): Path<(String, String)>,
+    Json(payload): Json<UpdateWebhookRequest>,
+) -> Result<Json<WebhookResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let claims = authenticate(&state, &headers)?;
+    check_db_owner(&state, &id, &claims.sub, &claims.typ)?;
+    let hook = state
+        .webhooks
+        .update(
+            &id,
+            &hook_id,
+            payload.url.as_deref(),
+            payload.secret,
+            payload.events.as_deref(),
+            payload.headers.as_ref(),
+            payload.retry,
+        )
+        .map_err(|e| {
+            let code = if e == "webhook not found" {
+                "NOT_FOUND"
+            } else {
+                "BAD_REQUEST"
+            };
+            let status = if e == "webhook not found" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (
+                status,
+                Json(ErrorResponse {
+                    error: e,
+                    code: code.into(),
+                }),
+            )
+        })?;
+    Ok(Json(WebhookResponse {
+        id: hook.id,
+        url: hook.url,
+        events: hook.events,
+        retry: hook.retry,
+        created_at: hook.created_at,
+    }))
+}
+
 async fn delete_webhook(
     state: State<AppState>,
     headers: HeaderMap,
@@ -711,6 +761,7 @@ async fn dispatch_webhooks(state: &AppState, db_id: &str, report: &crate::db::Ex
         EVENT_WRITE,
         report.statements.clone(),
         report.rows_affected,
+        report.frames.clone(),
     );
 }
 
@@ -1527,6 +1578,116 @@ mod integration_tests {
         let hooks = json.as_array().unwrap();
         assert_eq!(hooks.len(), 1);
         assert_eq!(hooks[0]["retry"]["max_attempts"], 3);
+
+        let _ = std::fs::remove_dir_all(&ctx.dir);
+    }
+
+    #[tokio::test]
+    async fn patches_update_and_clear_webhook_fields() {
+        let ctx = build_ctx().await;
+        ctx.create_user("paulette", "pw").await;
+        let alice = ctx.token("paulette", "user");
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            "/databases",
+            Some(&alice),
+            Some(serde_json::json!({"name": "patch-db"})),
+        )
+        .await;
+        let id = db_id_from_create(status, &json);
+
+        let (status, json) = send(
+            &ctx.app,
+            "POST",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            Some(serde_json::json!({
+                "url": "https://alice.example.com/h",
+                "secret": "old-secret",
+                "events": ["*"],
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let hook_id = json["id"].as_str().unwrap().to_string();
+
+        // Partial patch: change url + events + retry, leave secret untouched.
+        let (status, json) = send(
+            &ctx.app,
+            "PATCH",
+            &format!("/databases/{id}/webhooks/{hook_id}"),
+            Some(&alice),
+            Some(serde_json::json!({
+                "url": "https://alice.example.com/new",
+                "events": ["write"],
+                "retry": { "max_attempts": 5, "backoff_ms": [10] },
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["url"], "https://alice.example.com/new");
+        assert_eq!(json["events"], serde_json::json!(["write"]));
+        assert_eq!(json["retry"]["max_attempts"], 5);
+
+        // Clear the secret/retry via explicit nulls.
+        let (status, _) = send(
+            &ctx.app,
+            "PATCH",
+            &format!("/databases/{id}/webhooks/{hook_id}"),
+            Some(&alice),
+            Some(serde_json::json!({ "secret": null, "retry": null })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Unknown hook id -> 404; invalid url -> 400; non-owner -> 403.
+        let (status, _) = send(
+            &ctx.app,
+            "PATCH",
+            &format!("/databases/{id}/webhooks/nope"),
+            Some(&alice),
+            Some(serde_json::json!({ "url": "https://x.example.com" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = send(
+            &ctx.app,
+            "PATCH",
+            &format!("/databases/{id}/webhooks/{hook_id}"),
+            Some(&alice),
+            Some(serde_json::json!({ "url": "not a url" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        ctx.create_user("bob", "pw-b").await;
+        let bob = ctx.token("bob", "user");
+        let (status, _) = send(
+            &ctx.app,
+            "PATCH",
+            &format!("/databases/{id}/webhooks/{hook_id}"),
+            Some(&bob),
+            Some(serde_json::json!({ "url": "https://x.example.com" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // The cleared fields are gone and the patched url stuck.
+        let (status, json) = send(
+            &ctx.app,
+            "GET",
+            &format!("/databases/{id}/webhooks"),
+            Some(&alice),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let hooks = json.as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["url"], "https://alice.example.com/new");
+        assert!(hooks[0]["secret"].is_null() || hooks[0].get("secret").is_none());
+        assert!(hooks[0].get("retry").is_none() || hooks[0]["retry"].is_null());
 
         let _ = std::fs::remove_dir_all(&ctx.dir);
     }

@@ -113,6 +113,77 @@ pub struct CreateWebhookRequest {
     pub retry: Option<crate::webhooks::RetryPolicy>,
 }
 
+/// Partial webhook update. `secret`/`retry` use a double option: an absent field leaves it
+/// unchanged, an explicit `null` clears it, and a value sets it. `url`/`events`/`headers`
+/// replace the current value when present.
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateWebhookRequest {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub events: Option<Vec<String>>,
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
+    #[serde(default, deserialize_with = "optional_field::clearable_string")]
+    pub secret: Option<Option<String>>,
+    #[serde(default, deserialize_with = "optional_field::clearable_retry")]
+    pub retry: Option<Option<crate::webhooks::RetryPolicy>>,
+}
+
+/// Double-option helpers so a PATCH field can distinguish "absent" (`None`, leave
+/// unchanged) from an explicit JSON `null` (`Some(None)`, clear it) from a value
+/// (`Some(Some(v))`, set it). Plain `Option<Option<T>>` treats `null` as absent.
+pub mod optional_field {
+    use serde::Deserialize;
+
+    pub fn clearable_string<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        clearable(d)
+    }
+
+    pub fn clearable_retry<'de, D>(
+        d: D,
+    ) -> Result<Option<Option<crate::webhooks::RetryPolicy>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        clearable(d)
+    }
+
+    fn clearable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        use std::marker::PhantomData;
+
+        struct Double<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Double<T> {
+            type Value = Option<Option<T>>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "a value, an explicit null, or an absent field")
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(Some(None))
+            }
+
+            fn visit_some<D2>(self, d: D2) -> Result<Self::Value, D2::Error>
+            where
+                D2: serde::Deserializer<'de>,
+            {
+                T::deserialize(d).map(|v| Some(Some(v)))
+            }
+        }
+
+        d.deserialize_option(Double(PhantomData))
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct WebhookResponse {
     pub id: String,

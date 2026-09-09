@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here.
 
+## [1.6.0] - 2026-09-10
+
+### Added
+- **True change-framing** — write batches are wrapped in a transaction
+  (`BEGIN IMMEDIATE … COMMIT`/`ROLLBACK`; skipped for control statements) and each
+  write statement now produces a `frame` in the webhook payload: `before` holds the
+  rows matched by the statement's WHERE clause (UPDATE/DELETE), `after` holds the
+  rows produced by `RETURNING rowid, *` (INSERT/UPDATE). Frames are capped at 100
+  rows. When a snapshot can't be produced (WITHOUT ROWID tables, RETURNING
+  unsupported by the engine) delivery degrades to the previous plain-execution
+  behavior and the `frame` key is omitted. Failed batches roll back entirely
+  instead of applying partially.
+- **Webhook PATCH endpoint** — `PATCH /v1/databases/{id}/webhooks/{hook_id}` updates
+  `url`/`events`/`headers` in place without recreating the webhook. `secret` and
+  `retry` use explicit-null semantics: omitting the key leaves the value untouched,
+  JSON `null` clears it, and a value overwrites it. Returns the updated webhook;
+  404 for unknown hooks, 400 on validation errors.
+
+### Changed
+- `changes[]` entries now carry an optional `frame` object (`{ op, table,
+  before: {columns, rows}, after }`) derived from engine-traced rows rather than
+  statement parsing. The existing `values` capture (statement-parsed) is unchanged
+  and additive.
+- Test count: 69 → 75.
+
 ## [1.5.0] - 2026-09-09
 
 ### Added
