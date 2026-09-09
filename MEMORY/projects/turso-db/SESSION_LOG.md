@@ -4,6 +4,93 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-09-10 — v1.6.0: change-framing around writes, webhook PATCH, replica-sync plan
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Work the next feature candidates after v1.5.0 shipped: true change-framing BEFORE
+execute (row-level before/after snapshots, replacing statement-parsing claims),
+the webhook PATCH endpoint, then close the batch (version bump + MEMORY) and ship
+(commit + push + CI + Render verify). Also write the standing planning doc for full
+libsql replica sync.
+
+### What was built (src/db.rs, src/webhooks.rs, src/models.rs, src/routes.rs, src/libsql.rs)
+- **True change-framing (`src/db.rs`):** `execute` now wraps the whole write batch in
+  `BEGIN IMMEDIATE … COMMIT`/`ROLLBACK` (control statements skipped). Per statement,
+  `read_frame` snapshots matched rows before UPDATE/DELETE via
+  `SELECT rowid, * FROM "<table>" WHERE <raw where>`, and after every write via
+  `RETURNING rowid, *` (INSERT/UPDATE get `after`, DELETE gets `before`). Snapshots
+  stringified like query output, capped at `FRAME_CAP_ROWS = 100`. `ExecuteReport`
+  gained `frames: Vec<StatementFrame>`; a `has_rows()` shallow check decides whether a
+  frame is attached to `changes[].frame` in the payload. Batch atomicity is a
+  side-effect of the same change: a failed statement rolls back the entire batch
+  (previously per-statement autocommit). Frame capture failures degrade to plain
+  execution (WITHOUT ROWID tables: no implicit rowid, so no before/after).
+- **`src/webhooks.rs`:** new `RowFrame`/`StatementFrame` types (Serialize/Deserialize),
+  `where_text_for` (UPDATE uses a new `find_top_level_word` — quote/paren/comment
+  aware — since UPDATE has no "after-keyword FROM"; DELETE reuses `capture_where_suffix`).
+  `change_events(statements, Option<&[StatementFrame]>)`, `build_payload(..., frames)`,
+  `dispatch(..., frames)`. All statement parsing for *values* (INSERT VALUES /
+  update set/where / delete where) is preserved additively.
+- **Webhook PATCH (`src/models.rs`, `src/routes.rs`):** `UpdateWebhookRequest` with
+  double-option `secret`/`retry`; a new `optional_field` module implements a custom
+  serde `Visitor` (`visit_none` → `Some(None)`) so JSON `null` means "clear" while an
+  absent key means "leave" (the plain `Option<Option<T>>` + `#[serde(default)]` idiom
+  conflates null with absent). `WebhookStore::update` validates url/events/headers/
+  retry before mutating. Route: `patch(update_webhook).delete(delete_webhook)`
+  (was `delete` only). 200 + updated webhook; 404 unknown hook; 400 validation;
+  forbidden template untouched. Integration test
+  `patches_update_and_clear_webhook_fields`.
+- **libsql pipeline (`src/libsql.rs`):** deliver path passes `Vec::new()` frames —
+  no framing through the libsql protocol yet (noted limitation).
+- **Replica sync plan (`MEMORY/projects/turso-db/SYNC_PLAN.md`):** planning doc,
+  no code. Verified turso 0.7.2 ships a real embedded-replica engine
+  (`turso::sync::{Builder,Database}`: `push`/`pull`/`checkpoint`/`stats`/`connect`,
+  auth-token callbacks, long-poll). Documents the type split
+  (`turso::Database` vs `turso::sync::Database`), write-path push-after-commit
+  ordering, conflict semantics (read-replica first; LWW for bidirectional), testing,
+  rollout gates, and open questions for the boss (primary backend, token sourcing,
+  read-vs-bidirectional, staging target).
+
+### Bugs / gotchas fixed during tests
+- **Non-`Send` error across an await broke every handler:** the first framing draft
+  held a plain `Box<dyn Error>` across the `COMMIT` await → `!Send` future → "the
+  trait bound `…: Handler` is not satisfied" for all three handlers awaiting
+  `db_manager.execute`. Fixed by `FrameError(String)` (`Display` + `Error` +
+  value-in-box `Box<dyn Error + Send>`) internally, coercing to plain
+  `Box<dyn Error>` only at the routing boundary via `map_err`.
+- **This serde (1.0.229) moved error type to a method generic:** the `Visitor` impl
+  used `Self::Error` (old serde), but this version's `visit_none<E>`/`visit_some<D>`
+  take the error as a type parameter → `E0308`/missing-associated-type. Rewrote the
+  visitor with generic `E`/`D2` signatures (`T::deserialize(d).map(|v| Some(Some(v)))`).
+
+### Tests / verification
+- `cargo test --all-targets` → **75 pass** (was 69). New:
+  `frames_capture_before_and_after_rows`, `batch_rolls_back_entirely_on_error`,
+  `unframeable_tables_degrade_to_plain_execution`, `returning_clause_supported`,
+  `payload_includes_frames_when_present`, plus integration
+  `patches_update_and_clear_webhook_fields`.
+- `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+- Leak-literal scan clean before commit.
+
+### Notes / limitations
+- Framing is best-effort and always readable by consumers who ignore `frame`; `values`
+  and `frame` are independent (statement-parsed vs engine-traced).
+- libsql-pipeline deliveries carry no frames yet (route `dispatch_webhooks` uses
+  `report.frames`; pipeline passes empty). Replica `pull()` applies remote writes
+  without frames and without re-dispatching webhooks (loop-free).
+- Batch atomicity is now the contract: a mixed success/failure batch returns a rollback
+  instead of partial application.
+
+### Files changed
+`src/db.rs`, `src/webhooks.rs`, `src/models.rs`, `src/routes.rs`, `src/libsql.rs`,
+`Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, `DEPLOY.md`,
+`MEMORY/projects/turso-db/{STATUS,SESSION_LOG,SYNC_PLAN}.md`, new daily report,
+new lessons file. Push = `git push origin main` (Render auto-deploys via CI hook).
+
+---
+
 ## 2026-09-09 — v1.5.0: per-webhook retry policy, UPDATE/DELETE value capture
 
 **Model/session:** opencode (big-pickle)

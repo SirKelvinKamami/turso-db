@@ -1,50 +1,58 @@
 # Turso Service — Current Status
 
-**Last Updated:** 2026-09-09 (v1.5.0)
-**Version:** 1.5.0 (per-webhook retry policy, UPDATE/DELETE value capture)
+**Last Updated:** 2026-09-10 (v1.6.0)
+**Version:** 1.6.0 (change-framing around writes, webhook PATCH)
 
 ---
 
 ## Where We Are
 
-- Build environment repaired on the dev machine (Windows / windows-gnu).
-- v1.4.0 live on Render (`https://turso-db-8svn.onrender.com`): bounded pending queue,
-  HTTP route integration tests, INSERT VALUES capture, config-in-AppState. Health
-  verified (`version: 1.4.0`, `auth_db: supabase://public.turso_users`, 3 users).
-- **v1.5.0 (this batch):**
-  - **Per-webhook custom retry policy** — `CreateWebhookRequest.retry`
-    (`{ max_attempts, backoff_ms }`, validated at creation) controls the immediate
-    in-memory burst; echoed in webhook GET/POST. Pending-queue bounds stay global env.
-  - **UPDATE/DELETE value capture** — `changes[]` `values` now covers updates
-    (`set` map + optional `where`) and deletes (`where`, null for full-table sweep).
-  - Test count 63 → **69**; fmt/clippy/test all clean.
+- Build environment healthy on the dev machine (Windows / windows-gnu).
+- v1.5.0 live on Render (`https://turso-db-8svn.onrender.com`): per-webhook retry
+  policy, UPDATE/DELETE values in `changes[]`. Health verified (`version: 1.5.0`,
+  `auth_db: supabase://public.turso_users`, 3 users).
+- **v1.6.0 (this batch, ~shipped):**
+  - **True change-framing** — write batches run in `BEGIN IMMEDIATE … COMMIT/ROLLBACK`;
+    each write statement gets `before` (WHERE-matched rows, UPDATE/DELETE) and `after`
+    (`RETURNING rowid, *`) snapshots carried as `changes[].frame` in webhook payloads.
+    Best-effort: degrades to plain execution for frame-unfriendly tables
+    (WITHOUT ROWID), capped at 100 rows/frame. Failed batches now roll back entirely
+    (was per-statement autocommit).
+  - **Webhook PATCH** — `PATCH /v1/databases/{id}/webhooks/{hook_id}` edits
+    url/events/headers in place; `secret`/`retry` use explicit-null semantics
+    (omit → unchanged, `null` → clear, value → set).
+  - **Replica sync plan** written: `MEMORY/projects/turso-db/SYNC_PLAN.md` (uses
+    turso 0.7.2's in-tree `turso::sync` engine; opt-in, off by default; boss decision
+    needed on backend + token sourcing before implementation).
+  - Test count 69 → **75**; fmt/clippy/test all clean.
 - **Credential rotation still outstanding** (manual, boss): old JWT/admin/seed/Google
   values; ensure Render dashboard passwords are genuinely new.
 - Render auto-deploy on push via CI `RENDER_DEPLOY_HOOK_URL`.
 
 ## What Is Uncommitted
 
-Nothing — v1.5.0 is committed (`7bc12c7`), pushed to `origin/main`, CI green, and
-**live on Render** (health endpoint reports `version: 1.5.0`, healthy, 3 users).
+This batch is committed and pushed to `origin/main` (CI green + Render deploy fired).
+Leak-literal scan clean before commit.
 
 ## Blockers / Decisions Needed
 
 - **Credential rotation** (manual, boss) — oldest open item.
+- **Replica sync go/no-go** — SYNC_PLAN open questions: primary backend (Turso Cloud
+  vs sibling instance), auth token sourcing, read-replica vs bidirectional, staging.
 - **Where does data live in prod?** Supabase set on Render (users + db files + analytics
   + webhooks); 1GB Render disk is a caching layer.
 
 ## Next Feature Candidates
 
-- Full libsql replica sync (embedded replica, bidirectional conflict handling) — the
-  largest remaining item, needs its own planning session.
-- Change-tracking/framing layer BEFORE execute (true row-level values, not statement
-  parsing).
-- Webhook PATCH endpoint (edit url/events/headers/retry without recreating).
+- Implement `SYNC_PLAN.md` (phase 1 = read replicas, `SYNC_ENABLED=false` default →
+  staging → boss approval).
+- Wire change-frames into the libsql pipeline path (currently passes empty frames).
+- Per-DB read-replica staleness surface (`GET` stats) for operator visibility.
 
 ## Test Notes
 
-- `cargo test --all-targets` → **69 tests**, all pass.
-- New: `captures_update_set_and_where`, `captures_update_without_where_and_function_values`,
-  `captures_delete_where_or_null`, `change_events_attach_values_per_op`,
-  `retry_policy_validation_and_defaults`, `hook_burst_respects_policy`,
-  `webhooks_accept_custom_retry_policy` (integration).
+- `cargo test --all-targets` → **75 tests**, all pass.
+- New in v1.6.0: `frames_capture_before_and_after_rows`,
+  `batch_rolls_back_entirely_on_error`, `unframeable_tables_degrade_to_plain_execution`,
+  `returning_clause_supported` (regression probe), `payload_includes_frames_when_present`.
+- Kept: `patches_update_and_clear_webhook_fields` (integration).
