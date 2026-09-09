@@ -24,8 +24,8 @@
 
 ## What Is Uncommitted
 
-v1.5.0 batch ready for commit + push (Cargo.toml/lock bump, CHANGELOG, DEPLOY.md,
-webhook retry policy, UPDATE/DELETE capture, MEMORY).
+Nothing — v1.5.0 is committed (`7bc12c7`), pushed to `origin/main`, CI green, and
+**live on Render** (health endpoint reports `version: 1.5.0`, healthy, 3 users).
 
 ## Blockers / Decisions Needed
 
