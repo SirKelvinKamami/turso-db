@@ -62,7 +62,9 @@ bump to 1.7.0, document, commit, push, watch CI, verify Render.
 - `cargo test` → **78 pass**; `cargo build` + `--release` clean; `cargo fmt --check`
   and `cargo clippy --all-targets -- -D warnings` clean.
 - Leak-literal scan clean before commit (4 known literals absent).
-- CI + Render deploy confirmed after push (see below).
+- CI green (Build & Check incl. Deploy-to-Render step) after push. Render health was
+  still serving 1.6.0 at session end — the free-tier docker rebuild with the new
+  aws-lc-rs/rustls deps takes longer than prior deploys; re-verify once it lands.
 
 ### Notes / limitations
 - Sync is client-side only in v1.7.0: the hub (self-hosted libsql-server) is a separate
