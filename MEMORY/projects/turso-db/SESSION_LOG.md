@@ -4,6 +4,83 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-09-10 (late) — v1.7.0: libsql replica sync (bidirectional LWW), go-live batch
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Implement `SYNC_PLAN.md` after the boss's go/no-go answers (self-hosted libsql-server
+hub, bidirectional LWW, token via env), get it green (build/tests/fmt/clippy/release),
+bump to 1.7.0, document, commit, push, watch CI, verify Render.
+
+### What was built
+- **`src/config.rs`:** `SyncConfig { enabled, hub_url, hub_token, poll_ms }` +
+  `from_env()` (`SYNC_ENABLED`/`SYNC_HUB_URL`/`SYNC_HUB_TOKEN`/`SYNC_POLL_MS`, default
+  5000, `.max(250)` clamp). `Config.sync` with `#[serde(skip)]`.
+- **`Cargo.toml`:** `turso = { version = "0.7", features = ["sync"] }` (pulls
+  hyper/aws-lc-rs/rustls-native-certs/etc). Lock updated.
+- **`src/db.rs`:**
+  - `DbHandle::Local(turso::Database) | Replica { db: SyncDatabase, remote_url }`
+    (`pub(crate)`, `Clone`).
+  - `sync_remote_url(hub_base, name)` → `{hub}/{slug}` (alnum/`-`/`_` else `-`).
+  - `open_handle` sync branch: `SyncBuilder::new_remote(path).with_remote_url(...)
+    .with_client_name("turso-service").with_long_poll_timeout(poll).with_auth_token(...)`
+    → `build()`; failure → warn + fall back to Local (degraded mode). `.bootstrap_if_empty`
+    stays at libsql default (hub-side namespace is created on first connect).
+  - `spawn_sync_loop()`: single task, per replica pull → push → checkpoint each
+    30 ticks, sleep poll_ms; no-op unless enabled.
+  - `typo_tastic_connect`? No — `connect_to` serves `turso::Connection` for local &
+    replicas; `get_database` returns `(DbHandle, DatabaseEntry)`; execute/query/
+    query_with_columns/run_statement/persist_db all route through it.
+  - `main.rs` logs hub/poll and spawns the loop when enabled; `routes.rs` test ctx uses
+    `SyncConfig::default()`.
+- **Tests (75 → 78):** `sync_remote_url_slugs_db_names`,
+  `sync_config_defaults_to_disabled`, `open_handle_is_local_when_sync_disabled`.
+
+### The non-`Send` saga (the real meat)
+- First ordering: make `DbHandle` borrow-friendly split, then `connect()` by value,
+  then pool connections — each recompiled to the same axum `Handler` E0277 for the 5
+  handlers that await `db_manager` statement paths.
+- Root cause (via `#[axum::debug_handler]`): `turso::sync::Database` is `Send` but NOT
+  `Sync`, and its `connect()` future is NOT `Send` (its body uses `&self` — the
+  connection's `extra_io` driver callback — *after* an internal await, so `&self` is
+  live across the await). Awaiting it in a handler path makes the future non-`Send`.
+- Also caught: a `Result<Connection, Box<dyn StdError>>` temporary in `persist_db` was
+  non-`Send` (`Box<dyn Error>`) and was held across a later `.await` (temporary drop
+  scope spans the whole `if let`), breaking handler futures. Fixed by matching on the
+  `Result` directly (Err early-returns) so the err arm drops before the await.
+- **Fix:** `connect_to` Replica branch runs `open_replica_connection(&db).await` inside
+  `tokio::task::spawn_blocking` with a fresh `tokio::runtime::Builder::new_current_thread()
+  .enable_all()` — `Runtime::block_on` accepts non-`Send` futures; the engine drives
+  completion via its own IO worker thread.
+- **Regression guard:** `const fn _assert_send<T: Send>() {}` + `const _: () = {
+  _assert_send::<SyncDatabase>(); _assert_send::<turso::Connection>(); };`
+- Clippy discoveries: `remote_url` must be read (used in supervisor logs), `tick % 30`
+  → `tick.is_multiple_of(30)`, and `.ok()`-matching is banned — all resolved.
+
+### Tests / verification
+- `cargo test` → **78 pass**; `cargo build` + `--release` clean; `cargo fmt --check`
+  and `cargo clippy --all-targets -- -D warnings` clean.
+- Leak-literal scan clean before commit (4 known literals absent).
+- CI + Render deploy confirmed after push (see below).
+
+### Notes / limitations
+- Sync is client-side only in v1.7.0: the hub (self-hosted libsql-server) is a separate
+  deployment the boss must run; without it, `SYNC_ENABLED=true` degrades every DB to
+  local-only with a warn while the hub is unreachable.
+- Replica round-trips hit the hub on every request (connect over HTTP long-poll); no
+  persistent connection pool reused across requests yet (pool approach was abandoned
+  when `connect()` proved non-`Send`; per-call spawn_blocking is correct but heavier).
+- LWW is the engine's (libsql) semantics; no custom conflict resolution.
+- Change-frames still not delivered through the libsql pipeline path.
+
+### Files changed
+`src/db.rs`, `src/config.rs`, `src/main.rs`, `src/routes.rs`, `Cargo.toml`,
+`Cargo.lock`, `CHANGELOG.md`, `DEPLOY.md`, `.env.example`, `render.yaml` (SYNC_* vars),
+MEMORY status/session/daily/lessons. Push = `git push origin main` (Render auto-deploys).
+
+---
+
 ## 2026-09-10 — v1.6.0: change-framing around writes, webhook PATCH, replica-sync plan
 
 **Model/session:** opencode (big-pickle)
