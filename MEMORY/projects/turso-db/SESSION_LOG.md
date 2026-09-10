@@ -4,6 +4,61 @@ Log of AI working sessions. Newest first.
 
 ---
 
+## 2026-09-10 (late) — v1.7.1: hub-base sync remote + libsql hub on Render
+
+**Model/session:** opencode (big-pickle)
+
+### Objective
+Convert the (still-hypothetical) hub-ready flag into a working, honest plan given
+real constraints: no Docker/WSL/Windows sqld locally, so the hub goes to Render first
+(boss-approved), and the local turso-service instances become the staging replicas.
+
+### Research findings (shaped the implementation)
+- **sqld (libsql-server) CLI** (`libsql-server/src/main.rs`): modern sqld has NO
+  `--enable-http`/`-a`; HTTP is always on. Key flags/env: `--http-listen-addr` /
+  `SQLD_HTTP_LISTEN_ADDR` (default 127.0.0.1:8080), `--db-path` / `SQLD_DB_PATH`
+  (default data.sqld), `--enable-namespaces`, `SQLD_AUTH_JWT_KEY_FILE` /
+  `SQLD_AUTH_JWT_KEY` (JWT auth), `SQLD_HTTP_AUTH` (legacy HTTP Basic).
+- **sqld auth routes** (`libsql-server/src/auth/...`): JWT strategy = EdDSA
+  (`Validation::new(Algorithm::EdDSA)`), `exp` optional, empty claims → full write on
+  default namespace. `SQLD_AUTH_JWT_KEY` = raw 32-byte Ed25519 public key base64
+  (url-safe fine, `jsonwebtoken::DecodingKey::from_ed_components`). Basic is Bearer
+  incompatible → not usable with turso.
+- **turso engine sends `Authorization: Bearer <token>`** (vendor `turso-0.7.2 sync.rs`
+  lines 830-838). Requests are `{base_url}{path}` where path comes from the opaque
+  bundled C SDK — so any path segment on the remote base hits sqld's 404 fallback
+  because sqld serves replication/Hrana at the root.
+- **Consequence:** remote URL must be the hub root → `sync_remote_url()` now returns
+  the trimmed base (no `/{db-slug}`). With namespaces disabled (default), all sync DBs
+  converge into the single `default` namespace → multi-DB sync needs
+  `--enable-namespaces` + provisioning (separate decision).
+
+### What was built
+- `src/db.rs`: `sync_remote_url` → normalized base; `open_handle` passes base only;
+  test renamed `sync_remote_url_is_normalized_hub_base` (4 assertions).
+- Cargo version → **1.7.1**; CHANGELOG 1.7.1 entry; DEPLOY.md hub section rewritten
+  (docker run with SQLD_* envs, JWT auth explanation, root-routing note); .env.example
+  token comment updated.
+- `Dockerfile.hub`: wraps `ghcr.io/tursodatabase/libsql-server:latest`, EXPOSE 8080,
+  SQLD_HTTP_LISTEN_ADDR/SQLD_DB_PATH envs, CMD sqld.
+- `render.yaml`: added `turso-db-hub` web service (docker, free plan, /health probe,
+  SQLD_AUTH_JWT_KEY `sync:false`). Comment warns free = no persistent disk.
+- **Key minting** (temp helper `C:\Users\SIRKEL~1\AppData\Local\Temp\opencode\jwtgen`):
+  Ed25519 keypair + 5-year EdDSA JWT; verified decode with sqld's exact key path
+  (`VERIFY=OK exp=1946725538`). Values + SEED_HEX saved to
+  `...\jwtgen\sqld-hub-credentials.txt` (NOT committed).
+
+### Verification
+- cargo fmt + clippy `-D warnings` clean; `cargo test` → 78 pass.
+- Commit `af92ddf` pushed; CI **success**.
+
+### Deferred / boss-needed
+- Set `SQLD_AUTH_JWT_KEY` on Render hub (has edge 401 without it).
+- RENDER_API_KEY for env via API; else dashboard fill.
+- Multi-DB namespace decision before prod `SYNC_ENABLED=true`.
+
+---
+
 ## 2026-09-10 (late) — v1.7.0: libsql replica sync (bidirectional LWW), go-live batch
 
 **Model/session:** opencode (big-pickle)
