@@ -10,6 +10,11 @@
 - Build environment healthy on the dev machine (Windows / windows-gnu).
 - v1.6.0 live on Render (`https://turso-db-8svn.onrender.com`): change-framing,
   webhook PATCH. Health verified.
+- **v1.7.0 (this batch):** **live on Render** (health: `version: 1.7.0`,
+  `supabase://public.turso_users`, 3 users). First deploy failed with
+  `GLIBC_2.38 not found` — newer `rust:1.97` builder links a newer glibc than the
+  `debian:bookworm-slim` runtime; fixed by switching the runtime stage to
+  `debian:trixie-slim` (glibc 2.41).
 - **v1.7.0 (this batch):**
   - **LibSQL replica sync implemented** (per `SYNC_PLAN.md`, boss decisions: hub =
     self-hosted libsql-server, bidirectional LWW, token via `env://` = `SYNC_HUB_TOKEN`).

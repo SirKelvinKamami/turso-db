@@ -62,9 +62,11 @@ bump to 1.7.0, document, commit, push, watch CI, verify Render.
 - `cargo test` → **78 pass**; `cargo build` + `--release` clean; `cargo fmt --check`
   and `cargo clippy --all-targets -- -D warnings` clean.
 - Leak-literal scan clean before commit (4 known literals absent).
-- CI green (Build & Check incl. Deploy-to-Render step) after push. Render health was
-  still serving 1.6.0 at session end — the free-tier docker rebuild with the new
-  aws-lc-rs/rustls deps takes longer than prior deploys; re-verify once it lands.
+- CI green (Build & Check incl. Deploy-to-Render step) after push. First deploy failed
+  at runtime: `GLIBC_2.38 not found` — newer `rust:1.97` builder links newer glibc than
+  `debian:bookworm-slim` (2.36). Fixed by switching the runtime stage to
+  `debian:trixie-slim` (glibc 2.41); Render now serves **1.7.0** (health verified,
+  `supabase://public.turso_users`, 3 users).
 
 ### Notes / limitations
 - Sync is client-side only in v1.7.0: the hub (self-hosted libsql-server) is a separate
