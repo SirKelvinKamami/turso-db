@@ -41,3 +41,25 @@ services:
     disk:
       mountPath: /data
       sizeGB: 1
+  # Self-hosted libsql hub that the turso-service replicas converge with.
+  # NOTE: free instances have no persistent disk, so the hub SQLite data is
+  # ephemeral. Upgrade to a paid plan + disk before flipping SYNC_ENABLED on
+  # the production service.
+  - type: web
+    name: turso-db-hub
+    runtime: docker
+    plan: free
+    dockerfilePath: Dockerfile.hub
+    healthCheckPath: /health
+    envVars:
+      # EdDSA JWT public key (base64url) that turso-service replica tokens must
+      # be signed with. Set in the Render dashboard (Sync: false); without it the
+      # hub rejects every sync request with 401.
+      - key: SQLD_AUTH_JWT_KEY
+        sync: false
+      - key: SQLD_HTTP_LISTEN_ADDR
+        value: "0.0.0.0:8080"
+      - key: SQLD_DB_PATH
+        value: "data.sqld"
+      - key: RUST_LOG
+        value: "sqld=info"

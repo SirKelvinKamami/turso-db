@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## [1.7.1] - 2026-09-10
+
+### Fixed
+- **Sync remote is now the hub base URL, not `{hub}/{db-slug}`.** Current
+  libsql-server (sqld) mounts every replication/Hrana endpoint at the server root
+  and resolves the target database from auth/namespace negotiation, so a path
+  segment on the remote URL fell through to the 404 handler. The sync engine is
+  pointed at the trimmed hub base (the `sync_remote_url` test was updated to match).
+- **Render hub service added** — `render.yaml` now also provisions the libsql hub
+  (`ghcr.io/tursodatabase/libsql-server`) with JWT auth (`SQLD_AUTH_JWT_KEY`),
+  `/health` probe, and the hub data volume, so two service instances can converge.
+
+### Changed
+- Test count: 78 (sync remote test reworded).
+
 ## [1.7.0] - 2026-09-10
 
 ### Added

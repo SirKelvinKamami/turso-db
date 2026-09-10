@@ -220,13 +220,24 @@ replacement for the push-style webhook wiring above.
 
 ### 1. Run a hub
 
-Any libsql-server-compatible endpoint works (Turso Cloud database URL, or a
-self-hosted `libsql-server`):
+Any libsql-server-compatible endpoint works. A self-hosted hub exposes the HTTP
+API on `:8080` and authenticates clients with a JWT key:
 ```bash
-docker run -d --name libsql-hub -p 127.0.0.1:8080:8080 \
-  ghcr.io/tursodatabase/libsql-server:latest --enable-http
-# auth: start with `-a <your-auth-secret>`, then use it as the hub token
+docker run -d --name libsql-hub -p 8080:8080 \
+  -e SQLD_HTTP_LISTEN_ADDR=0.0.0.0:8080 \
+  -e SQLD_DB_PATH=data.sqld \
+  -e SQLD_AUTH_JWT_KEY='<base64url Ed25519 public key>' \
+  ghcr.io/tursodatabase/libsql-server:latest
 ```
+- The replicas send `Authorization: Bearer <jwt>` (the `SYNC_HUB_TOKEN`), so the
+  hub must use JWT auth (`SQLD_AUTH_JWT_KEY`, EdDSA). The legacy Basic auth
+  (`SQLD_HTTP_AUTH`) is rejected by the sync engine (Bearer scheme), and an
+  unauthenticated hub is unsafe to expose publicly.
+- `render.yaml` ships a ready-made hub service (`turso-db-hub`) with the same
+  environment; set `SQLD_AUTH_JWT_KEY` in the Render dashboard.
+- Current sqld resolves the target database from auth/namespace negotiation at the
+  server root, so one hub namespace = one database. The service syncs into that
+  (default) namespace; per-database namespaces are a follow-up.
 
 ### 2. Configure this service
 
@@ -234,16 +245,14 @@ docker run -d --name libsql-hub -p 127.0.0.1:8080:8080 \
 # .env
 SYNC_ENABLED=true
 SYNC_HUB_URL=https://libsql.example.com     # libsql:// / turso:// / https:// all work
-SYNC_HUB_TOKEN=your-hub-auth-token
+SYNC_HUB_TOKEN=your-jwt-hub-token           # EdDSA JWT matching SQLD_AUTH_JWT_KEY
 SYNC_POLL_MS=5000
 ```
 
 ### 3. How it behaves
 
 - When `SYNC_ENABLED=true` and `SYNC_HUB_URL` is set, every opened/created database
-  becomes a replica whose remote URL is `{hub}/{name-slug}` (name trimmed to
-  alphanumerics, `-`, `_`). The hub record/namespace is created on first connect
-  (bootstrap).
+  becomes a replica whose remote URL is the hub base (no path suffix).
 - A background supervisor (one task) pulls remote changes, pushes local changes,
   and checkpoints the WAL every 30 ticks (`30 × poll_ms`), so replicas converge in
   both directions using LWW.
@@ -273,7 +282,7 @@ SYNC_POLL_MS=5000
 | `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | *(empty)* | Optional persistence backend |
 | `SYNC_ENABLED` | `false` | Enable libsql replica sync (off = pure local engine) |
 | `SYNC_HUB_URL` | *(empty)* | Hub base URL (`libsql://`/`turso://`/`https://`) |
-| `SYNC_HUB_TOKEN` | *(empty)* | Hub auth token |
+| `SYNC_HUB_TOKEN` | *(empty)* | Hub JWT (sent as `Authorization: Bearer`) |
 | `SYNC_POLL_MS` | `5000` | Replica poll interval ms (min `250`) |
 | `RUST_LOG` | `info` | Log level |
 

@@ -1,6 +1,6 @@
 [package]
 name = "turso-service"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2024"
 description = "A self-hosted, privacy-first database service powered by Turso"
 license = "MIT"

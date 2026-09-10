@@ -1,0 +1,13 @@
+# Thin wrapper around the official libsql-server (sqld) image.
+# Env-configures the HTTP listener and data path so the replicas can reach it,
+# and lets Render treat it like any other web service (EXPOSE 8080, /health).
+FROM ghcr.io/tursodatabase/libsql-server:latest
+
+ENV SQLD_HTTP_LISTEN_ADDR=0.0.0.0:8080 \
+    SQLD_DB_PATH=data.sqld
+
+EXPOSE 8080
+
+# SQLD_AUTH_JWT_KEY must be provided by the platform (EdDSA JWT key used for
+# Authorization: Bearer <jwt> from turso-service replicas).
+CMD ["sqld"]

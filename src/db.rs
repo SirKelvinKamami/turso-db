@@ -229,22 +229,12 @@ const _: () = {
     _assert_send::<turso::Connection>();
 };
 
-/// Build the per-database remote URL as `{hub_base}/{db-name}` with a lean slug for the
-/// db name so hub path segments stay safe (no slashes/quotes/query cruft).
-fn sync_remote_url(hub_base: &str, db_name: &str) -> String {
-    let base = hub_base.trim().trim_end_matches('/');
-    let slug: String = db_name
-        .trim()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    format!("{base}/{slug}")
+/// Build the per-database remote URL for the sync engine. Current libsql-server (sqld)
+/// routes all replication/Hrana endpoints at the server root and resolves the target
+/// database from auth (JWT) and namespace negotiation — a path segment here would
+/// fall through to the 404 handler, so the remote is exactly the normalized hub base.
+fn sync_remote_url(hub_base: &str) -> String {
+    hub_base.trim().trim_end_matches('/').to_string()
 }
 
 #[derive(Clone)]
@@ -289,7 +279,7 @@ impl DatabaseManager {
         if self.sync.enabled
             && let Some(base) = self.sync.hub_url.as_deref()
         {
-            let remote = sync_remote_url(base, name);
+            let remote = sync_remote_url(base);
             let mut builder = SyncBuilder::new_remote(path)
                 .with_remote_url(&remote)
                 .with_client_name("turso-service")
@@ -957,22 +947,22 @@ mod tests {
     }
 
     #[test]
-    fn sync_remote_url_slugs_db_names() {
+    fn sync_remote_url_is_normalized_hub_base() {
         assert_eq!(
-            sync_remote_url("https://hub.example.com", "my-app"),
-            "https://hub.example.com/my-app"
+            sync_remote_url("https://hub.example.com"),
+            "https://hub.example.com"
         );
         assert_eq!(
-            sync_remote_url("http://127.0.0.1:8080/", "a b/c"),
-            "http://127.0.0.1:8080/a-b-c"
+            sync_remote_url("http://127.0.0.1:8080/"),
+            "http://127.0.0.1:8080"
         );
         assert_eq!(
-            sync_remote_url("libsql://hub.example.com", "orders"),
-            "libsql://hub.example.com/orders"
+            sync_remote_url("libsql://hub.example.com"),
+            "libsql://hub.example.com"
         );
         assert_eq!(
-            sync_remote_url("https://hub.example.com/", ""),
-            "https://hub.example.com/"
+            sync_remote_url("  https://hub.example.com/  "),
+            "https://hub.example.com"
         );
     }
 
