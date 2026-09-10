@@ -1,13 +1,13 @@
 [package]
 name = "turso-service"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 description = "A self-hosted, privacy-first database service powered by Turso"
 license = "MIT"
 
 [dependencies]
-turso = "0.7"
-axum = "0.8"
+turso = { version = "0.7", features = ["sync"] }
+axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 base64 = "0.22"
 tokio = { version = "1", features = ["full"] }

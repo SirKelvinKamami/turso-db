@@ -49,7 +49,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("SUPABASE_URL/SUPABASE_SERVICE_KEY not set - using ephemeral storage");
     }
 
-    let db_manager = DatabaseManager::new(&config.data_dir, supabase.clone()).await?;
+    let db_manager =
+        DatabaseManager::new(&config.data_dir, supabase.clone(), config.sync.clone()).await?;
+    if config.sync.enabled {
+        tracing::info!(
+            "Replica sync enabled (hub: {}, poll: {}ms)",
+            config
+                .sync
+                .hub_url
+                .as_deref()
+                .unwrap_or("(missing SYNC_HUB_URL)"),
+            config.sync.poll_ms
+        );
+        db_manager.spawn_sync_loop();
+    }
 
     let user_store = UserStore::new(supabase.clone());
 

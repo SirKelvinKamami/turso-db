@@ -212,6 +212,49 @@ Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($a.id)/webhooks" -M
 
 ---
 
+## Replica sync with a libsql hub (v1.7.0+)
+
+Since v1.7.0 databases can run as **libsql replicas** of a remote hub instead of
+plain local engines (bidirectional last-writer-wins sync). This is the built-in
+replacement for the push-style webhook wiring above.
+
+### 1. Run a hub
+
+Any libsql-server-compatible endpoint works (Turso Cloud database URL, or a
+self-hosted `libsql-server`):
+```bash
+docker run -d --name libsql-hub -p 127.0.0.1:8080:8080 \
+  ghcr.io/tursodatabase/libsql-server:latest --enable-http
+# auth: start with `-a <your-auth-secret>`, then use it as the hub token
+```
+
+### 2. Configure this service
+
+```powershell
+# .env
+SYNC_ENABLED=true
+SYNC_HUB_URL=https://libsql.example.com     # libsql:// / turso:// / https:// all work
+SYNC_HUB_TOKEN=your-hub-auth-token
+SYNC_POLL_MS=5000
+```
+
+### 3. How it behaves
+
+- When `SYNC_ENABLED=true` and `SYNC_HUB_URL` is set, every opened/created database
+  becomes a replica whose remote URL is `{hub}/{name-slug}` (name trimmed to
+  alphanumerics, `-`, `_`). The hub record/namespace is created on first connect
+  (bootstrap).
+- A background supervisor (one task) pulls remote changes, pushes local changes,
+  and checkpoints the WAL every 30 ticks (`30 × poll_ms`), so replicas converge in
+  both directions using LWW.
+- If the hub is unreachable, opening that database logs a warning and serves
+  **local-only** — the instance keeps working until the hub returns. Requests to a
+  replica connect through the hub on every call, so hub latency/availability
+  governs replica round-trips (local mode has no hub dependency at all).
+- Sync is **off by default**; leaving `SYNC_ENABLED` unset/false is a pure no-op.
+
+---
+
 ## Configuration (.env)
 
 | Variable | Default | Description |
@@ -228,6 +271,10 @@ Invoke-RestMethod -Uri "http://localhost:3100/v1/databases/$($a.id)/webhooks" -M
 | `GOOGLE_CLIENT_ID` | *(empty)* | Enables verified Google sign-in |
 | `ANALYTICS_RETENTION_HOURS` | `168` | Analytics history window |
 | `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | *(empty)* | Optional persistence backend |
+| `SYNC_ENABLED` | `false` | Enable libsql replica sync (off = pure local engine) |
+| `SYNC_HUB_URL` | *(empty)* | Hub base URL (`libsql://`/`turso://`/`https://`) |
+| `SYNC_HUB_TOKEN` | *(empty)* | Hub auth token |
+| `SYNC_POLL_MS` | `5000` | Replica poll interval ms (min `250`) |
 | `RUST_LOG` | `info` | Log level |
 
 ### Persistence Backends

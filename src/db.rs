@@ -2,9 +2,12 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use turso::Builder;
+use turso::sync::{Builder as SyncBuilder, Database as SyncDatabase};
 use uuid::Uuid;
 
+use crate::config::SyncConfig;
 use crate::supabase::Supabase;
 use crate::webhooks::{RowFrame, StatementFrame, classify_write, where_text_for};
 
@@ -195,18 +198,69 @@ pub struct DatabaseEntry {
     pub created_at: String,
 }
 
+/// Open database handle: a plain local engine, or (when sync is enabled) a synced
+/// replica connected to the hub. Both expose the same `turso::Connection`, so every
+/// statement path works identically on either. The sync engine's handle is `Send` but
+/// NOT `Sync`, and its `connect()` future is not `Send` either — see `connect_to`.
+#[derive(Clone)]
+pub(crate) enum DbHandle {
+    Local(turso::Database),
+    Replica {
+        db: SyncDatabase,
+        remote_url: String,
+    },
+}
+
+/// `turso::sync::Database::connect()` future is not `Send`: its body uses `&self`
+/// (for the connection's `extra_io` driver callback) *after* an internal await, so the
+/// async fn captures `&self` across the await. It must never run directly in a task
+/// future that axum requires to be `Send`. `build()`/`push()`/`pull()` don't have this
+/// shape, so opening and the supervisor loop are unproblematic.
+async fn open_replica_connection(db: &SyncDatabase) -> Result<turso::Connection, turso::Error> {
+    db.connect().await
+}
+
+// Compile-time shape check for the sync handle so a turso bump can't silently make
+// handler futures non-`Send` again. Expected: sync Database is Send but NOT Sync (the
+// latter is why `connect()` must run off the handler path — see `connect_to`).
+const fn _assert_send<T: Send>() {}
+const _: () = {
+    _assert_send::<SyncDatabase>();
+    _assert_send::<turso::Connection>();
+};
+
+/// Build the per-database remote URL as `{hub_base}/{db-name}` with a lean slug for the
+/// db name so hub path segments stay safe (no slashes/quotes/query cruft).
+fn sync_remote_url(hub_base: &str, db_name: &str) -> String {
+    let base = hub_base.trim().trim_end_matches('/');
+    let slug: String = db_name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{base}/{slug}")
+}
+
 #[derive(Clone)]
 pub struct DatabaseManager {
     data_dir: String,
     manifest_path: String,
-    databases: Arc<DashMap<String, (turso::Database, DatabaseEntry)>>,
+    databases: Arc<DashMap<String, (DbHandle, DatabaseEntry)>>,
     supabase: Option<Supabase>,
+    sync: SyncConfig,
 }
 
 impl DatabaseManager {
     pub async fn new(
         data_dir: &str,
         supabase: Option<Supabase>,
+        sync: SyncConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(data_dir)?;
         let manager = Self {
@@ -214,6 +268,7 @@ impl DatabaseManager {
             manifest_path: format!("{}/databases.json", data_dir),
             databases: Arc::new(DashMap::new()),
             supabase,
+            sync,
         };
         if manager.supabase.is_some() {
             manager.load_from_supabase().await?;
@@ -221,6 +276,81 @@ impl DatabaseManager {
             manager.load_manifest().await?;
         }
         Ok(manager)
+    }
+
+    /// Open a database file as either a plain local handle or (when sync is enabled and
+    /// a hub is configured) a synced replica. Sync open failures degrade to local-only
+    /// with a warning, so the instance keeps serving while the hub is unreachable.
+    async fn open_handle(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Result<DbHandle, Box<dyn std::error::Error>> {
+        if self.sync.enabled
+            && let Some(base) = self.sync.hub_url.as_deref()
+        {
+            let remote = sync_remote_url(base, name);
+            let mut builder = SyncBuilder::new_remote(path)
+                .with_remote_url(&remote)
+                .with_client_name("turso-service")
+                .with_long_poll_timeout(Duration::from_millis(self.sync.poll_ms.max(250)));
+            if let Some(token) = self.sync.hub_token.as_deref() {
+                builder = builder.with_auth_token(token.to_string());
+            }
+            match builder.build().await {
+                Ok(db) => {
+                    tracing::info!("Opened synced replica for {name}: {remote}");
+                    return Ok(DbHandle::Replica {
+                        db,
+                        remote_url: remote,
+                    });
+                }
+                Err(e) => tracing::warn!(
+                    "Sync open failed for {name} ({remote}); degraded to local-only: {e}"
+                ),
+            }
+        }
+        Ok(DbHandle::Local(Builder::new_local(path).build().await?))
+    }
+
+    /// Background supervisor that keeps replica databases converged with the hub: pull
+    /// remote changes, push local changes, and periodically checkpoint the WAL. Safe
+    /// no-op when sync is disabled; loop is single-task so pull/push never race.
+    pub fn spawn_sync_loop(&self) {
+        if !self.sync.enabled {
+            return;
+        }
+        let dbs = self.databases.clone();
+        let poll_ms = self.sync.poll_ms.max(250);
+        tokio::spawn(async move {
+            let mut tick: u64 = 0;
+            loop {
+                let replicas: Vec<(SyncDatabase, String)> = dbs
+                    .iter()
+                    .filter_map(|entry| match &entry.value().0 {
+                        DbHandle::Replica { db, remote_url } => {
+                            Some((db.clone(), remote_url.clone()))
+                        }
+                        DbHandle::Local(_) => None,
+                    })
+                    .collect();
+                for (db, remote) in replicas {
+                    if let Err(e) = db.pull().await {
+                        tracing::debug!("sync pull failed ({remote}): {}", e);
+                    }
+                    if let Err(e) = db.push().await {
+                        tracing::debug!("sync push failed ({remote}): {}", e);
+                    }
+                    tick += 1;
+                    if tick.is_multiple_of(30)
+                        && let Err(e) = db.checkpoint().await
+                    {
+                        tracing::debug!("sync checkpoint failed ({remote}): {}", e);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(poll_ms)).await;
+            }
+        });
     }
 
     async fn load_manifest(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -233,12 +363,12 @@ impl DatabaseManager {
                     if !Path::new(&path).exists() {
                         continue;
                     }
-                    match Builder::new_local(&path).build().await {
-                        Ok(db) => {
+                    match self.open_handle(&path, &entry.name).await {
+                        Ok(handle) => {
                             self.databases.insert(
                                 entry.id.clone(),
                                 (
-                                    db,
+                                    handle,
                                     DatabaseEntry {
                                         owner: entry.owner.clone(),
                                         name: entry.name.clone(),
@@ -276,15 +406,16 @@ impl DatabaseManager {
                 continue;
             }
             let db_path = path.to_string_lossy().into_owned();
-            match Builder::new_local(&db_path).build().await {
-                Ok(db) => {
+            let name = format!("recovered-{}", id);
+            match self.open_handle(&db_path, &name).await {
+                Ok(handle) => {
                     self.databases.insert(
                         id.clone(),
                         (
-                            db,
+                            handle,
                             DatabaseEntry {
                                 owner: "admin".to_string(),
-                                name: format!("recovered-{}", id),
+                                name,
                                 created_at: chrono::Utc::now().to_rfc3339(),
                             },
                         ),
@@ -339,16 +470,16 @@ impl DatabaseManager {
                     }
                     Err(e) => {
                         tracing::warn!("No stored backup for {} ({}): {}", name, id, e);
-                        Builder::new_local(&path).build().await?;
+                        self.open_handle(&path, &name).await?;
                     }
                 }
             }
-            match Builder::new_local(&path).build().await {
-                Ok(db) => {
+            match self.open_handle(&path, &name).await {
+                Ok(handle) => {
                     self.databases.insert(
                         id.clone(),
                         (
-                            db,
+                            handle,
                             DatabaseEntry {
                                 owner,
                                 name,
@@ -410,13 +541,13 @@ impl DatabaseManager {
     ) -> Result<(String, DatabaseEntry), Box<dyn std::error::Error>> {
         let id = Uuid::new_v4().to_string();
         let path = format!("{}/{}.db", self.data_dir, id);
-        let db = Builder::new_local(&path).build().await?;
+        let handle = self.open_handle(&path, name).await?;
         let entry = DatabaseEntry {
             owner: owner.to_string(),
             name: name.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
         };
-        self.databases.insert(id.clone(), (db, entry.clone()));
+        self.databases.insert(id.clone(), (handle, entry.clone()));
         if let Some(sb) = &self.supabase {
             if let Err(e) = sb
                 .insert(
@@ -447,14 +578,45 @@ impl DatabaseManager {
         Ok((id, entry))
     }
 
-    pub async fn get_database(
+    pub(crate) async fn get_database(
         &self,
         id: &str,
-    ) -> Result<(turso::Database, DatabaseEntry), Box<dyn std::error::Error>> {
+    ) -> Result<(DbHandle, DatabaseEntry), Box<dyn std::error::Error>> {
         self.databases
             .get(id)
             .map(|entry| entry.value().clone())
             .ok_or_else(|| format!("Database {} not found", id).into())
+    }
+
+    /// Open a `turso::Connection` for this database. Local engines connect in place;
+    /// sync replicas run the non-`Send` `connect()` on a blocking thread via a
+    /// `LocalSet` so every handler future stays `Send`. The first few calls after a
+    /// replica is created may wait for the remote libsql hub to respond.
+    async fn connect_to(
+        &self,
+        db_id: &str,
+    ) -> Result<turso::Connection, Box<dyn std::error::Error>> {
+        let (handle, _) = self.get_database(db_id).await?;
+        match handle {
+            DbHandle::Local(db) => db.connect().map_err(|e| e.to_string().into()),
+            DbHandle::Replica { db, .. } => {
+                // The sync engine's `connect()` future is not `Send`, so it cannot run
+                // inline in these handler paths (axum requires `Send` futures). Run it
+                // on a blocking thread with a dedicated current-thread runtime; the
+                // engine drives completion through its own I/O worker thread.
+                let conn = tokio::task::spawn_blocking(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| e.to_string())?;
+                    rt.block_on(open_replica_connection(&db))
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                Ok(conn)
+            }
+        }
     }
 
     async fn persist_db(&self, db_id: &str, owner: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -462,11 +624,13 @@ impl DatabaseManager {
             return Ok(());
         };
         let path = format!("{}/{}.db", self.data_dir, db_id);
-        if let Some(entry) = self.databases.get(db_id)
-            && let Ok(conn) = entry.value().0.connect()
-        {
-            let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", ()).await;
-        }
+        // Match on the `Result` directly so its non-`Send` `Box<dyn Error>` arm is dropped
+        // before the checkpoint await below (keeps the handler futures `Send`).
+        let conn = match self.connect_to(db_id).await {
+            Ok(conn) => conn,
+            Err(_) => return Ok(()),
+        };
+        let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);", ()).await;
         let bytes = tokio::fs::read(&path).await?;
         if let Err(e) = sb.upload_db(owner, db_id, bytes).await {
             tracing::error!("Failed to persist database {} to storage: {}", db_id, e);
@@ -479,8 +643,8 @@ impl DatabaseManager {
         db_id: &str,
         sql: &str,
     ) -> Result<ExecuteReport, Box<dyn std::error::Error>> {
-        let (db, entry) = self.get_database(db_id).await?;
-        let conn = db.connect()?;
+        let (_, entry) = self.get_database(db_id).await?;
+        let conn = self.connect_to(db_id).await?;
         let statements: Vec<String> = split_sql(sql)
             .into_iter()
             .filter(|s| !sql_is_query(s))
@@ -642,8 +806,8 @@ impl DatabaseManager {
         db_id: &str,
         sql: &str,
     ) -> Result<(Vec<String>, Vec<Vec<String>>), Box<dyn std::error::Error>> {
-        let (db, entry) = self.get_database(db_id).await?;
-        let conn = db.connect()?;
+        let (_, entry) = self.get_database(db_id).await?;
+        let conn = self.connect_to(db_id).await?;
         let mut rows = conn.query(sql, ()).await?;
         let columns: Vec<String> = rows
             .columns()
@@ -672,8 +836,8 @@ impl DatabaseManager {
         db_id: &str,
         sql: &str,
     ) -> Result<Vec<Vec<String>>, Box<dyn std::error::Error>> {
-        let (db, entry) = self.get_database(db_id).await?;
-        let conn = db.connect()?;
+        let (_, entry) = self.get_database(db_id).await?;
+        let conn = self.connect_to(db_id).await?;
         let mut rows = conn.query(sql, ()).await?;
         let mut results = Vec::new();
 
@@ -701,8 +865,8 @@ impl DatabaseManager {
         (Vec<(String, Option<String>)>, Vec<Vec<turso::Value>>, u64),
         Box<dyn std::error::Error>,
     > {
-        let (db, entry) = self.get_database(db_id).await?;
-        let conn = db.connect()?;
+        let (_, entry) = self.get_database(db_id).await?;
+        let conn = self.connect_to(db_id).await?;
 
         let is_query = sql_is_query(sql);
 
@@ -790,6 +954,47 @@ mod tests {
         let path = dir.join("f.db").to_string_lossy().into_owned();
         let db = Builder::new_local(&path).build().await.unwrap();
         db.connect().unwrap()
+    }
+
+    #[test]
+    fn sync_remote_url_slugs_db_names() {
+        assert_eq!(
+            sync_remote_url("https://hub.example.com", "my-app"),
+            "https://hub.example.com/my-app"
+        );
+        assert_eq!(
+            sync_remote_url("http://127.0.0.1:8080/", "a b/c"),
+            "http://127.0.0.1:8080/a-b-c"
+        );
+        assert_eq!(
+            sync_remote_url("libsql://hub.example.com", "orders"),
+            "libsql://hub.example.com/orders"
+        );
+        assert_eq!(
+            sync_remote_url("https://hub.example.com/", ""),
+            "https://hub.example.com/"
+        );
+    }
+
+    #[test]
+    fn sync_config_defaults_to_disabled() {
+        let c = SyncConfig::default();
+        assert!(!c.enabled);
+        assert!(c.hub_url.is_none());
+        assert!(c.hub_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_handle_is_local_when_sync_disabled() {
+        let dir = std::env::temp_dir().join(format!("turso-open-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = DatabaseManager::new(dir.to_str().unwrap(), None, SyncConfig::default())
+            .await
+            .unwrap();
+        let path = format!("{}/x.db", dir.to_str().unwrap());
+        let handle = mgr.open_handle(&path, "demo").await.unwrap();
+        assert!(matches!(handle, DbHandle::Local(_)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

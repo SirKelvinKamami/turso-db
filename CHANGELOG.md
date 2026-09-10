@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here.
 
+## [1.7.0] - 2026-09-10
+
+### Added
+- **LibSQL replica sync (bidirectional LWW)** — each database can now run as a
+  synced replica of a remote libsql hub instead of a plain local engine.
+  - Backend is the official `turso` crate's `sync` feature (a libsql-server
+    compatible hub over HTTP long-poll).
+  - Controlled by four env vars: `SYNC_ENABLED` (default `false`), `SYNC_HUB_URL`
+    (`libsql://`/`turso://`/`https://` hub base), `SYNC_HUB_TOKEN` (hub auth token),
+    and `SYNC_POLL_MS` (default `5000`, clamped to ≥250).
+  - When enabled and configured, newly opened databases become replicas pointing at
+    `{hub}/{name-slug}` (record being created on the hub's behalf by libsql's
+    bootstrap); a background supervisor pulls remote changes, pushes local changes,
+    and checkpoints the WAL every 30 ticks.
+  - Degraded mode: a hub that can't be reached at open time logs a warning and the
+    database falls back to local-only operation, so the service keeps serving while
+    the hub is unreachable.
+  - Sync is off by default and a no-op when `SYNC_ENABLED` is unset/false.
+- Test count: 75 → 78.
+
+### Changed
+- **Internal:** `DbHandle` (Local vs Replica) with a common `turso::Connection`
+  surface keeps every statement path identical; the sync engine's non-`Send`
+  `connect()` runs on a blocking thread (dedicated current-thread runtime), so all
+  axum handler futures remain `Send` (guarded by a compile-time assertion).
+
 ## [1.6.0] - 2026-09-10
 
 ### Added

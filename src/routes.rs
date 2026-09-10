@@ -1092,6 +1092,7 @@ mod integration_tests {
             encryption_key: None,
             google_client_id: String::new(),
             seed_users: vec![],
+            sync: crate::config::SyncConfig::default(),
         }
     }
 
@@ -1118,7 +1119,10 @@ mod integration_tests {
         let dir = std::env::temp_dir().join(format!("turso-it-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let config = test_config(dir.to_str().unwrap());
-        let db_manager = DatabaseManager::new(&config.data_dir, None).await.unwrap();
+        let db_manager =
+            DatabaseManager::new(&config.data_dir, None, crate::config::SyncConfig::default())
+                .await
+                .unwrap();
         let user_store = UserStore::new(None);
         let rate_limiter = RateLimiter::new(10_000, 60);
         let query_tracker = QueryTracker::new(None);

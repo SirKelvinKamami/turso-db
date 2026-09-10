@@ -30,6 +30,14 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      - key: SYNC_ENABLED
+        value: "false"
+      - key: SYNC_HUB_URL
+        sync: false
+      - key: SYNC_HUB_TOKEN
+        sync: false
+      - key: SYNC_POLL_MS
+        value: "5000"
     disk:
       mountPath: /data
       sizeGB: 1
