@@ -3461,10 +3461,12 @@ dependencies = [
 name = "turso-service"
 version = "1.7.1"
 dependencies = [
+ "anyhow",
  "argon2",
  "axum",
  "axum-extra",
  "base64",
+ "bytes",
  "chrono",
  "dashmap",
  "dotenvy",
@@ -3472,8 +3474,10 @@ dependencies = [
  "hmac",
  "http-body-util",
  "jsonwebtoken",
+ "prost",
  "rand 0.8.7",
  "reqwest",
+ "roaring",
  "serde",
  "serde_json",
  "sha2",
@@ -3485,6 +3489,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "turso",
+ "turso_core",
+ "turso_sync_engine",
  "uuid",
 ]
 

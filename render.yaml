@@ -41,7 +41,9 @@ services:
     disk:
       mountPath: /data
       sizeGB: 1
-  # Self-hosted libsql hub that the turso-service replicas converge with.
+  # Self-hosted sync hub (src/bin/sync_hub.rs) the turso-service replicas
+  # converge with. Speaks the sync-engine wire protocol (POST /v2/pipeline and
+  # POST /pull-updates).
   # NOTE: free instances have no persistent disk, so the hub SQLite data is
   # ephemeral. Upgrade to a paid plan + disk before flipping SYNC_ENABLED on
   # the production service.
@@ -52,14 +54,12 @@ services:
     dockerfilePath: Dockerfile.hub
     healthCheckPath: /health
     envVars:
-      # EdDSA JWT public key (base64url) that turso-service replica tokens must
-      # be signed with. Set in the Render dashboard (Sync: false); without it the
-      # hub rejects every sync request with 401.
-      - key: SQLD_AUTH_JWT_KEY
+      # Bearer token replicas must present. Must equal SYNC_HUB_TOKEN on the
+      # turso-service replicas. Set in the Render dashboard (Sync: false);
+      # without it the hub rejects every sync request with 401.
+      - key: HUB_TOKEN
         sync: false
-      - key: SQLD_HTTP_LISTEN_ADDR
-        value: "0.0.0.0:8080"
-      - key: SQLD_DB_PATH
-        value: "data.sqld"
+      - key: HUB_DB_PATH
+        value: "hub.sqld"
       - key: RUST_LOG
-        value: "sqld=info"
+        value: "sync_hub=info"
