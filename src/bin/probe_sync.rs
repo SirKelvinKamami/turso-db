@@ -37,7 +37,7 @@ async fn main() {
     attempt("zero", &p_empty).await;
 
     let valid = dir.join("valid.db");
-    std::fs::write(&valid, &[0u8; 0]).unwrap();
+    std::fs::write(&valid, [0u8; 0]).unwrap();
     let _ = valid;
     println!("== done; hub log should show requests ==");
     std::thread::sleep(Duration::from_secs(2));

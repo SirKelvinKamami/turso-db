@@ -98,6 +98,11 @@ pub struct RateLimitInfo {
     pub remaining: u64,
     pub limit: u64,
     pub window_secs: u64,
+    /// Seconds until the current window rolls over and the budget refills.
+    pub reset_in_secs: u64,
+    /// Which bucket this answer describes: `user:<name>` (enforced on the
+    /// libsql pipeline) or `ip:<addr>` (per-IP guard).
+    pub scope: String,
 }
 
 #[derive(Debug, Deserialize)]

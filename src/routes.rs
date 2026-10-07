@@ -78,17 +78,22 @@ pub fn api_routes(
         .with_state(state)
 }
 
-fn check_rate_limit(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    let ip = headers
+/// Best-effort client address for the per-IP guard. Render always sets
+/// `x-forwarded-for`, and only the first hop is ours to trust.
+fn client_ip(headers: &HeaderMap) -> String {
+    headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
+fn check_rate_limit(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     state
         .rate_limiter
-        .check(&ip)
+        .check(&client_ip(headers))
         .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
     Ok(())
 }
@@ -908,12 +913,75 @@ async fn setup_database(
     }))
 }
 
-async fn rate_limit_info(state: State<AppState>) -> Json<RateLimitInfo> {
-    Json(RateLimitInfo {
-        remaining: state.rate_limiter.max_requests(),
-        limit: state.rate_limiter.max_requests(),
+async fn rate_limit_info(
+    state: State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<RateLimitInfo>, (StatusCode, Json<ErrorResponse>)> {
+    let unauthorized = |error: &str| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: error.to_string(),
+                code: "UNAUTHORIZED".into(),
+            }),
+        )
+    };
+
+    let raw_token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| extract_token_from_header(v).ok());
+
+    // Unauthenticated: answer for the shared per-IP bucket, which is all a
+    // caller with no credentials can be measured against.
+    let token = match raw_token {
+        Some(t) => t,
+        None => {
+            let ip = client_ip(&headers);
+            let limit = state.rate_limiter.max_requests();
+            let snap = state.rate_limiter.peek(&ip, limit);
+            return Ok(Json(RateLimitInfo {
+                remaining: snap.remaining,
+                limit: snap.limit,
+                window_secs: state.rate_limiter.window_secs(),
+                reset_in_secs: snap.reset_in_secs,
+                scope: format!("ip:{}", ip),
+            }));
+        }
+    };
+
+    // Prefer the API-key identity — that is the bucket the libsql pipeline
+    // actually charges — then fall back to a JWT for dashboard callers.
+    let (key, scope, limit) = if let Some(user) = state.user_store.find_by_api_key(&token).await {
+        let plan = if is_admin(&user.username) {
+            Plan::Enterprise
+        } else {
+            Plan::from_str(&user.plan)
+        };
+        (
+            user.username.clone(),
+            format!("user:{}", user.username),
+            plan.max_queries_per_minute(),
+        )
+    } else {
+        let claims = verify_token(&token, &state.config.jwt_secret)
+            .map_err(|_| unauthorized("Invalid or expired token"))?;
+        let plan = plan_for(&state, &claims.sub, &claims.typ).await;
+        (
+            claims.sub.clone(),
+            format!("user:{}", claims.sub),
+            plan.max_queries_per_minute(),
+        )
+    };
+
+    let snap = state.rate_limiter.peek(&key, limit);
+    Ok(Json(RateLimitInfo {
+        remaining: snap.remaining,
+        limit: snap.limit,
         window_secs: state.rate_limiter.window_secs(),
-    })
+        reset_in_secs: snap.reset_in_secs,
+        scope,
+    }))
 }
 
 fn authenticate(

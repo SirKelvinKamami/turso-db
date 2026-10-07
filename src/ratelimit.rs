@@ -9,6 +9,15 @@ pub struct RateLimiter {
     window_secs: u64,
 }
 
+/// Read-only view of one bucket. Returned by [`RateLimiter::peek`] so callers
+/// can report real usage without consuming a slot from the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimitSnapshot {
+    pub remaining: u64,
+    pub limit: u64,
+    pub reset_in_secs: u64,
+}
+
 struct RateLimitState {
     count: u64,
     window_start: Instant,
@@ -47,6 +56,38 @@ impl RateLimiter {
         } else {
             entry.count += 1;
             Ok(entry.max.saturating_sub(entry.count))
+        }
+    }
+
+    /// Read-only counter lookup: never increments the bucket, so hitting the
+    /// status endpoint cannot itself push a caller over the limit.
+    ///
+    /// `max` is the limit in force right now (the caller's plan); it wins over
+    /// the stored one only when the stored window is already stale.
+    pub fn peek(&self, key: &str, max: u64) -> RateLimitSnapshot {
+        let now = Instant::now();
+        match self.store.get(key) {
+            None => RateLimitSnapshot {
+                remaining: max,
+                limit: max,
+                reset_in_secs: self.window_secs,
+            },
+            Some(entry) => {
+                let elapsed = now.duration_since(entry.window_start).as_secs();
+                if elapsed > self.window_secs {
+                    RateLimitSnapshot {
+                        remaining: max,
+                        limit: max,
+                        reset_in_secs: 0,
+                    }
+                } else {
+                    RateLimitSnapshot {
+                        remaining: max.saturating_sub(entry.count),
+                        limit: max,
+                        reset_in_secs: self.window_secs.saturating_sub(elapsed),
+                    }
+                }
+            }
         }
     }
 
@@ -113,5 +154,54 @@ mod tests {
         let rl = RateLimiter::new(5, 30);
         assert_eq!(rl.max_requests(), 5);
         assert_eq!(rl.window_secs(), 30);
+    }
+
+    #[test]
+    fn peek_reports_full_budget_for_unknown_key() {
+        let rl = RateLimiter::new(1000, 60);
+        assert_eq!(
+            rl.peek("nobody", 2000),
+            RateLimitSnapshot {
+                remaining: 2000,
+                limit: 2000,
+                reset_in_secs: 60
+            }
+        );
+    }
+
+    #[test]
+    fn peek_counts_down_and_does_not_consume() {
+        let rl = RateLimiter::new(1000, 60);
+        for _ in 0..3 {
+            assert!(rl.check_with_limit("k", 10).is_ok());
+        }
+        let first = rl.peek("k", 10);
+        let second = rl.peek("k", 10);
+        assert_eq!(first.remaining, 7);
+        assert_eq!(second, first, "peek must not consume a slot");
+    }
+
+    #[test]
+    fn peek_uses_callers_limit_over_default() {
+        let rl = RateLimiter::new(1000, 60);
+        assert!(rl.check_with_limit("k", 10).is_ok());
+        let snap = rl.peek("k", 2000);
+        assert_eq!(snap.limit, 2000);
+        assert_eq!(snap.remaining, 1999);
+    }
+
+    #[test]
+    fn peek_reports_reset_after_window() {
+        let rl = RateLimiter::new(1, 3600);
+        let _ = rl.check("k");
+        {
+            let mut entry = rl.store.get_mut("k").unwrap();
+            entry.window_start = Instant::now()
+                .checked_sub(Duration::from_secs(3601))
+                .unwrap();
+        }
+        let snap = rl.peek("k", 5);
+        assert_eq!(snap.remaining, 5);
+        assert_eq!(snap.reset_in_secs, 0);
     }
 }
